@@ -297,6 +297,10 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
   '("eyes")
   "Reactions that trigger expanding a truncated message.")
 
+(defconst agent-shell-to-go--heart-reactions
+  '("heart" "heart_eyes" "heartpulse" "sparkling_heart" "two_hearts" "revolving_hearts")
+  "Reactions that send appreciation to the agent.")
+
 (defcustom agent-shell-to-go-hidden-messages-dir "~/.agent-shell/slack/"
   "Directory to store original content of hidden messages.
 Messages are stored as CHANNEL/TIMESTAMP.txt files."
@@ -509,15 +513,27 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
   (expand-file-name (concat channel "/" ts ".txt")
                     agent-shell-to-go-hidden-messages-dir))
 
-(defun agent-shell-to-go--get-message-text (channel ts)
-  "Get the text of message at TS in CHANNEL."
-  (let* ((response (agent-shell-to-go--api-request
-                    "GET"
-                    (format "conversations.history?channel=%s&latest=%s&limit=1&inclusive=true"
-                            channel ts)))
-         (messages (alist-get 'messages response))
-         (message (and messages (aref messages 0))))
-    (alist-get 'text message)))
+(defun agent-shell-to-go--get-message-text (channel ts &optional thread-ts)
+  "Get the text of message at TS in CHANNEL.
+If THREAD-TS is provided, look in that thread for the message."
+  (if thread-ts
+      ;; Look in thread replies
+      (let* ((response (agent-shell-to-go--api-request
+                        "GET"
+                        (format "conversations.replies?channel=%s&ts=%s"
+                                channel thread-ts)))
+             (messages (alist-get 'messages response)))
+        (cl-loop for msg across messages
+                 when (equal ts (alist-get 'ts msg))
+                 return (alist-get 'text msg)))
+    ;; Top-level message
+    (let* ((response (agent-shell-to-go--api-request
+                      "GET"
+                      (format "conversations.history?channel=%s&latest=%s&limit=1&inclusive=true"
+                              channel ts)))
+           (messages (alist-get 'messages response))
+           (message (and messages (aref messages 0))))
+      (alist-get 'text message))))
 
 (defun agent-shell-to-go--save-hidden-message (channel ts text)
   "Save TEXT of message at TS in CHANNEL to disk."
@@ -578,6 +594,26 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
        `((channel . ,channel)
          (ts . ,ts)
          (text . ,full-text))))))
+
+(defun agent-shell-to-go--find-buffer-for-channel (channel-id)
+  "Find an agent-shell buffer associated with CHANNEL-ID."
+  (cl-find-if
+   (lambda (buf)
+     (and (buffer-live-p buf)
+          (equal channel-id
+                 (buffer-local-value 'agent-shell-to-go--channel-id buf))))
+   agent-shell-to-go--active-buffers))
+
+(defun agent-shell-to-go--handle-heart-reaction (channel ts)
+  "Handle heart reaction on message at TS in CHANNEL.
+Sends the message content to the agent as appreciation feedback."
+  (let* ((buffer (agent-shell-to-go--find-buffer-for-channel channel))
+         (thread-ts (and buffer (buffer-local-value 'agent-shell-to-go--thread-ts buffer)))
+         (message-text (agent-shell-to-go--get-message-text channel ts thread-ts)))
+    (when (and buffer message-text)
+      (with-current-buffer buffer
+        (agent-shell-to-go--inject-message
+         (format "The user heart reacted to: %s" message-text))))))
 
 (defun agent-shell-to-go--collapse-message (channel ts)
   "Re-truncate expanded message at TS in CHANNEL."
@@ -640,6 +676,10 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
     ;; Check for expand reactions (show full truncated message)
     (when (member reaction agent-shell-to-go--expand-reactions)
       (agent-shell-to-go--expand-message channel msg-ts))
+    ;; Check for heart reactions (send appreciation to agent)
+    (when (member reaction agent-shell-to-go--heart-reactions)
+      (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
+      (agent-shell-to-go--handle-heart-reaction channel msg-ts))
     ;; Then check for permission reactions
     (when pending
       (let* ((info (cdr pending))

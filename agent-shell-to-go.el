@@ -90,6 +90,11 @@ Override this if you have a custom agent-shell starter function."
   (when agent-shell-to-go-debug
     (apply #'message (concat "agent-shell-to-go: " format-string) args)))
 
+(defun agent-shell-to-go--strip-non-ascii (text)
+  "Strip non-ASCII characters from TEXT, replacing them with '?'."
+  (when text
+    (replace-regexp-in-string "[^[:ascii:]]" "?" text)))
+
 (defun agent-shell-to-go--load-env ()
   "Load credentials from .env file if not already set."
   (when (file-exists-p agent-shell-to-go-env-file)
@@ -153,8 +158,10 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
   (let* ((url-request-method method)
          (url-request-extra-headers
           `(("Authorization" . ,(concat "Bearer " agent-shell-to-go-bot-token))
-            ("Content-Type" . "application/json")))
-         (url-request-data (when data (encode-coding-string (json-encode data) 'utf-8)))
+            ("Content-Type" . "application/json; charset=utf-8")))
+         (url-request-data (when data
+                             (string-as-unibyte
+                              (encode-coding-string (json-encode data) 'utf-8))))
          (url (concat "https://slack.com/api/" endpoint)))
     (with-current-buffer (url-retrieve-synchronously url t)
       (goto-char (point-min))
@@ -166,7 +173,7 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
 (defun agent-shell-to-go--send (text &optional thread-ts)
   "Send TEXT to Slack, optionally in THREAD-TS thread."
   (let ((data `((channel . ,agent-shell-to-go-channel-id)
-                (text . ,text))))
+                (text . ,(agent-shell-to-go--strip-non-ascii text)))))
     (when thread-ts
       (push `(thread_ts . ,thread-ts) data))
     (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))

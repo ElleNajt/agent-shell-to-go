@@ -247,7 +247,7 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 
 - [ ] Image fetching - view images/screenshots from agent responses (via `files.upload` API, needs `files:write` scope)
 - [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
-- [ ] Better UTF-8 and unicode handling (currently stripped to ASCII)
+- [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically
 - [ ] Matrix integration
 - [ ] Discord integration

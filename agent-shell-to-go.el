@@ -602,15 +602,28 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
     (when (file-exists-p path)
       (delete-file path))))
 
+(defconst agent-shell-to-go--slack-max-length 3800
+  "Maximum message length for Slack API (with buffer for truncation note).")
+
+(defconst agent-shell-to-go--truncation-note
+  "\n_... (full text too long for Slack)_"
+  "Note appended when expanded message still exceeds Slack limit.")
+
 (defun agent-shell-to-go--expand-message (channel ts)
-  "Expand truncated message at TS in CHANNEL to show full text."
+  "Expand truncated message at TS in CHANNEL to show full text.
+If the full text exceeds Slack's limit, show as much as possible with a note."
   (let ((full-text (agent-shell-to-go--load-truncated-message channel ts)))
     (when full-text
-      (agent-shell-to-go--api-request
-       "POST" "chat.update"
-       `((channel . ,channel)
-         (ts . ,ts)
-         (text . ,full-text))))))
+      (let* ((too-long (> (length full-text) agent-shell-to-go--slack-max-length))
+             (display-text (if too-long
+                               (concat (substring full-text 0 agent-shell-to-go--slack-max-length)
+                                       agent-shell-to-go--truncation-note)
+                             full-text)))
+        (agent-shell-to-go--api-request
+         "POST" "chat.update"
+         `((channel . ,channel)
+           (ts . ,ts)
+           (text . ,display-text)))))))
 
 (defun agent-shell-to-go--find-buffer-for-channel (channel-id)
   "Find an agent-shell buffer associated with CHANNEL-ID."

@@ -1192,6 +1192,10 @@ ORIG-FN is the original function, ARGS are its arguments."
       (when prompt
         (agent-shell-to-go--send
          (agent-shell-to-go--format-user-message prompt)
+         agent-shell-to-go--thread-ts)
+        ;; Send processing indicator immediately after user message
+        (agent-shell-to-go--send
+         ":hourglass_flowing_sand: _Processing..._"
          agent-shell-to-go--thread-ts))))
   ;; Clear the from-slack flag after checking it
   (setq agent-shell-to-go--from-slack nil)
@@ -1304,14 +1308,6 @@ ORIG-FN is the original function, ARGS are its arguments."
                    (agent-shell-to-go--send
                     (if (equal status "completed") ":white_check_mark:" ":x:")
                     thread-ts)))))))))))  ; truncate=t
-  (apply orig-fn args))
-
-(defun agent-shell-to-go--on-heartbeat-start (orig-fn &rest args)
-  "Advice for agent-shell-heartbeat-start. Send processing indicator to Slack.
-ORIG-FN is the original function, ARGS are its arguments."
-  (when (and agent-shell-to-go-mode
-             agent-shell-to-go--thread-ts)
-    (agent-shell-to-go--send ":hourglass_flowing_sand: _Processing..._" agent-shell-to-go--thread-ts))
   (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
@@ -1520,7 +1516,6 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
-  (advice-add 'agent-shell-heartbeat-start :around #'agent-shell-to-go--on-heartbeat-start)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
 
   ;; Start file watcher for auto-uploading images
@@ -1546,7 +1541,6 @@ ORIG-FN is the original function, ARGS are its arguments."
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
-    (advice-remove 'agent-shell-heartbeat-start #'agent-shell-to-go--on-heartbeat-start)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
 
   (agent-shell-to-go--debug "mirroring disabled"))

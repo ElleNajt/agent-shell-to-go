@@ -403,13 +403,18 @@ Tries projectile first, then project.el, then falls back to buffer directories."
             `((channel . ,channel)
               (text . ":shrug: No open projects found")))))))))
 
+(defvar agent-shell-to-go--intentional-close nil
+  "Non-nil when we're intentionally closing the WebSocket (to prevent reconnect loop).")
+
 (defun agent-shell-to-go--websocket-connect ()
   "Connect to Slack via WebSocket."
   (agent-shell-to-go--load-env)
   (unless agent-shell-to-go-app-token
     (error "agent-shell-to-go-app-token not set"))
   (when agent-shell-to-go--websocket
-    (websocket-close agent-shell-to-go--websocket))
+    (setq agent-shell-to-go--intentional-close t)
+    (ignore-errors (websocket-close agent-shell-to-go--websocket))
+    (setq agent-shell-to-go--intentional-close nil))
   (let ((ws-url (agent-shell-to-go--get-websocket-url)))
     (setq agent-shell-to-go--websocket
           (websocket-open ws-url
@@ -417,7 +422,8 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                                         (agent-shell-to-go--handle-websocket-message frame))
                           :on-close (lambda (_ws)
                                       (message "agent-shell-to-go: WebSocket closed")
-                                      (agent-shell-to-go--websocket-reconnect))
+                                      (unless agent-shell-to-go--intentional-close
+                                        (agent-shell-to-go--websocket-reconnect)))
                           :on-error (lambda (_ws _type err)
                                       (message "agent-shell-to-go: WebSocket error: %s" err))))))
 
@@ -435,8 +441,10 @@ Tries projectile first, then project.el, then falls back to buffer directories."
     (cancel-timer agent-shell-to-go--websocket-reconnect-timer)
     (setq agent-shell-to-go--websocket-reconnect-timer nil))
   (when agent-shell-to-go--websocket
-    (websocket-close agent-shell-to-go--websocket)
-    (setq agent-shell-to-go--websocket nil)))
+    (setq agent-shell-to-go--intentional-close t)
+    (ignore-errors (websocket-close agent-shell-to-go--websocket))
+    (setq agent-shell-to-go--websocket nil)
+    (setq agent-shell-to-go--intentional-close nil)))
 
 ;;; Advice functions to hook into agent-shell
 
@@ -486,6 +494,8 @@ ORIG-FN is the original function, ARGS are its arguments."
         (agent-shell-to-go--send
          (agent-shell-to-go--format-user-message prompt)
          agent-shell-to-go--thread-ts))))
+  ;; Clear the from-slack flag after checking it
+  (setq agent-shell-to-go--from-slack nil)
   (setq agent-shell-to-go--current-agent-message nil)
   (apply orig-fn args))
 
@@ -612,15 +622,13 @@ ORIG-FN is the original function, ARGS are its arguments."
 (defun agent-shell-to-go--inject-message (text)
   "Inject TEXT from Slack into the current agent-shell buffer."
   (when (derived-mode-p 'agent-shell-mode)
+    ;; Set flag - it will be cleared by the send-command advice after it skips posting
     (setq agent-shell-to-go--from-slack t)
-    (unwind-protect
-        (progn
-          (save-excursion
-            (goto-char (point-max))
-            (insert text))
-          (goto-char (point-max))
-          (call-interactively #'shell-maker-submit))
-      (setq agent-shell-to-go--from-slack nil))))
+    (save-excursion
+      (goto-char (point-max))
+      (insert text))
+    (goto-char (point-max))
+    (call-interactively #'shell-maker-submit)))
 
 ;;; Minor mode
 

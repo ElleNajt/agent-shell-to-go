@@ -771,16 +771,30 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                        (file-name-directory file)))
                    (buffer-list)))))))
 
+(defun agent-shell-to-go--get-project-for-channel (channel-id)
+  "Get the project path associated with CHANNEL-ID, or nil if not found."
+  (let ((result nil))
+    (maphash (lambda (project-path ch-id)
+               (when (equal ch-id channel-id)
+                 (setq result project-path)))
+             agent-shell-to-go--project-channels)
+    result))
+
 (defun agent-shell-to-go--handle-slash-command (payload)
   "Handle a slash command PAYLOAD from Slack."
   (let* ((command (alist-get 'command payload))
          (text (alist-get 'text payload))
          (channel (alist-get 'channel_id payload))
+         (channel-project (agent-shell-to-go--get-project-for-channel channel))
          (folder (expand-file-name
-                  (if (and text (not (string-empty-p text)))
-                      text
-                    agent-shell-to-go-default-folder))))
-    (agent-shell-to-go--debug "slash command: %s %s" command text)
+                  (cond
+                   ;; Explicit folder argument takes priority
+                   ((and text (not (string-empty-p text))) text)
+                   ;; Use channel's project if available
+                   (channel-project channel-project)
+                   ;; Fall back to default
+                   (t agent-shell-to-go-default-folder)))))
+    (agent-shell-to-go--debug "slash command: %s %s (channel project: %s)" command text channel-project)
     (pcase command
       ("/new-agent"
        (agent-shell-to-go--start-agent-in-folder folder nil))

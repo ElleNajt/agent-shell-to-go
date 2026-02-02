@@ -202,7 +202,7 @@ Use these anywhere in the channel (not in threads):
 
 | Command | Description |
 |---------|-------------|
-| `/new-agent [folder]` | Start a new agent in a folder (defaults to configured folder) |
+| `/new-agent [folder]` | Start a new agent (defaults to channel's project, then configured folder) |
 | `/new-agent-container [folder]` | Start a new agent in a container (like `C-u` prefix) |
 | `/projects` | List open projects from Emacs (each as a separate message for easy copy) |
 
@@ -222,6 +222,11 @@ React to messages in the thread:
 |-------|--------|
 | :see_no_evil: or :no_bell: | Hide message completely (remove to unhide) |
 | :eyes: | Expand truncated message (remove to re-truncate) |
+
+**Feedback:**
+| Emoji | Action |
+|-------|--------|
+| :heart: (or other hearts) | Send appreciation to the agent ("The user heart reacted to: ...") |
 
 Long messages are automatically truncated to 500 characters with `:eyes: _for more_` at the end. Add the :eyes: reaction to see the full content.
 

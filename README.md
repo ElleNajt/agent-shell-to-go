@@ -225,6 +225,14 @@ When Claude requests permission (e.g., to run a command), you'll see a message i
 (setq agent-shell-to-go-start-agent-function #'my/start-claude-code)
 ```
 
+## Roadmap
+
+- [ ] Image fetching - view images/screenshots from agent responses
+- [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
+- [ ] Matrix integration
+- [ ] Discord integration
+- [ ] Telegram integration
+
 ## License
 
 GPL-3.0

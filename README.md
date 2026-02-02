@@ -113,6 +113,37 @@ Skip to [Configure credentials](#2-configure-credentials).
 
 ### 2. Configure credentials
 
+**These credentials are extremely sensitive.** Anyone with these tokens can send messages to your Slack channel - and your Emacs will execute them as agent-shell prompts. Treat them like SSH keys.
+
+#### Option A: Using pass (recommended)
+
+```elisp
+(setq agent-shell-to-go-bot-token (string-trim (shell-command-to-string "pass slack/agent-shell-bot-token")))
+(setq agent-shell-to-go-channel-id (string-trim (shell-command-to-string "pass slack/agent-shell-channel-id")))
+(setq agent-shell-to-go-app-token (string-trim (shell-command-to-string "pass slack/agent-shell-app-token")))
+```
+
+#### Option B: Using macOS Keychain
+
+```elisp
+(defun my/keychain-get (service account)
+  (string-trim (shell-command-to-string
+                (format "security find-generic-password -s '%s' -a '%s' -w" service account))))
+
+(setq agent-shell-to-go-bot-token (my/keychain-get "agent-shell-to-go" "bot-token"))
+(setq agent-shell-to-go-channel-id (my/keychain-get "agent-shell-to-go" "channel-id"))
+(setq agent-shell-to-go-app-token (my/keychain-get "agent-shell-to-go" "app-token"))
+```
+
+To add credentials to Keychain:
+```bash
+security add-generic-password -s "agent-shell-to-go" -a "bot-token" -w "xoxb-your-token"
+security add-generic-password -s "agent-shell-to-go" -a "channel-id" -w "C0123456789"
+security add-generic-password -s "agent-shell-to-go" -a "app-token" -w "xapp-your-token"
+```
+
+#### Option C: Using .env file (less secure)
+
 Create a `.env` file (default: `~/.doom.d/.env`):
 
 ```
@@ -120,6 +151,8 @@ SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_CHANNEL_ID=C0123456789
 SLACK_APP_TOKEN=xapp-your-app-token
 ```
+
+Make sure this file is not in any git repository and has restricted permissions (`chmod 600`).
 
 ### 3. Add to your Emacs config
 

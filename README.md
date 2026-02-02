@@ -200,6 +200,10 @@ Send these in the Slack thread to control the session:
 | `!safe` | Accept edits mode |
 | `!plan` | Plan mode |
 | `!mode` | Show current mode |
+| `!stop` | Interrupt the agent |
+| `!restart` | Kill and restart agent with transcript |
+| `!latest` | Jump to bottom of thread |
+| `!debug` | Show session debug info |
 | `!help` | Show available commands |
 
 ### Slash Commands
@@ -253,6 +257,12 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 
 ;; Custom function to start agents (e.g., your own claude-code wrapper)
 (setq agent-shell-to-go-start-agent-function #'my/start-claude-code)
+
+;; Directory for bookmark TODOs (default: ~/org/todo/)
+(setq agent-shell-to-go-todo-directory "~/org/todo/")
+
+;; Image upload rate limit (default: 30 per minute, nil to disable)
+(setq agent-shell-to-go-image-upload-rate-limit 30)
 ```
 
 ## Troubleshooting

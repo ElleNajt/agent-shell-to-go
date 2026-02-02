@@ -72,7 +72,7 @@ Channels are named based on the project directory name."
   :type 'boolean
   :group 'agent-shell-to-go)
 
-(defcustom agent-shell-to-go-channel-prefix "agent-"
+(defcustom agent-shell-to-go-channel-prefix ""
   "Prefix for auto-created project channels."
   :type 'string
   :group 'agent-shell-to-go)

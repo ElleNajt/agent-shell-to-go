@@ -4,8 +4,8 @@
 
 ;; Author: Elle Najt
 ;; URL: https://github.com/ElleNajt/agent-shell-to-go
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (agent-shell "0.33.1"))
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "29.1") (agent-shell "0.33.1") (websocket "1.14"))
 ;; Keywords: convenience, tools, ai
 
 ;; This file is not part of GNU Emacs.
@@ -19,17 +19,18 @@
 ;; - Each agent-shell session gets its own Slack thread
 ;; - Messages you send from Emacs appear in Slack
 ;; - Messages you send from Slack get injected back into agent-shell
+;; - Real-time via Slack Socket Mode (WebSocket)
 ;; - Works with any agent-shell agent (Claude, Gemini, etc.)
 ;;
 ;; Setup:
-;; 1. Create a Slack app with bot token scopes:
-;;    - chat:write
-;;    - channels:history
-;;    - channels:read
+;; 1. Create a Slack app with:
+;;    - Bot token scopes: chat:write, channels:history, channels:read, reactions:read
+;;    - Enable Socket Mode and get an app-level token (xapp-...)
 ;;
-;; 2. Create ~/.doom.d/.env (or customize `agent-shell-to-go-env-file'):
+;; 2. Create ~/.doom.d/.env:
 ;;    SLACK_BOT_TOKEN=xoxb-your-token
 ;;    SLACK_CHANNEL_ID=C0123456789
+;;    SLACK_APP_TOKEN=xapp-your-app-token
 ;;
 ;; 3. Add to your config:
 ;;    (use-package agent-shell-to-go
@@ -41,6 +42,7 @@
 
 (require 'json)
 (require 'url)
+(require 'websocket)
 
 (defgroup agent-shell-to-go nil
   "Take your agent-shell sessions anywhere."
@@ -62,16 +64,14 @@
   :type 'string
   :group 'agent-shell-to-go)
 
-(defcustom agent-shell-to-go-poll-interval 5
-  "Seconds between polling for Slack replies."
-  :type 'integer
+(defcustom agent-shell-to-go-app-token nil
+  "Slack app-level token (xapp-...) for Socket Mode. Loaded from .env if nil."
+  :type 'string
   :group 'agent-shell-to-go)
 
 (defun agent-shell-to-go--load-env ()
   "Load credentials from .env file if not already set."
-  (when (and (file-exists-p agent-shell-to-go-env-file)
-             (or (null agent-shell-to-go-bot-token)
-                 (null agent-shell-to-go-channel-id)))
+  (when (file-exists-p agent-shell-to-go-env-file)
     (with-temp-buffer
       (insert-file-contents (expand-file-name agent-shell-to-go-env-file))
       (goto-char (point-min))
@@ -80,19 +80,18 @@
               (value (match-string 2)))
           (pcase key
             ("SLACK_BOT_TOKEN"
-             (setq agent-shell-to-go-bot-token value))
+             (unless agent-shell-to-go-bot-token
+               (setq agent-shell-to-go-bot-token value)))
             ("SLACK_CHANNEL_ID"
-             (setq agent-shell-to-go-channel-id value))))))))
+             (unless agent-shell-to-go-channel-id
+               (setq agent-shell-to-go-channel-id value)))
+            ("SLACK_APP_TOKEN"
+             (unless agent-shell-to-go-app-token
+               (setq agent-shell-to-go-app-token value)))))))))
 
 ;; Internal state
 (defvar-local agent-shell-to-go--thread-ts nil
   "Slack thread timestamp for this buffer's conversation.")
-
-(defvar-local agent-shell-to-go--last-seen-ts nil
-  "Last message timestamp we've seen in the Slack thread.")
-
-(defvar agent-shell-to-go--poll-timer nil
-  "Timer for polling Slack for replies.")
 
 (defvar agent-shell-to-go--active-buffers nil
   "List of agent-shell buffers with active Slack mirroring.")
@@ -105,7 +104,13 @@
 
 (defvar agent-shell-to-go--pending-permissions nil
   "Alist of pending permission requests.
-Each entry: (slack-msg-ts . (:request-id id :state state :buffer buffer :options options))")
+Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
+
+(defvar agent-shell-to-go--websocket nil
+  "The WebSocket connection to Slack.")
+
+(defvar agent-shell-to-go--websocket-reconnect-timer nil
+  "Timer for reconnecting WebSocket.")
 
 (defconst agent-shell-to-go--reaction-map
   '(("white_check_mark" . allow)
@@ -142,23 +147,6 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (push `(thread_ts . ,thread-ts) data))
     (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
 
-(defun agent-shell-to-go--update-message (msg-ts text)
-  "Update message MSG-TS with new TEXT."
-  (agent-shell-to-go--api-request
-   "POST" "chat.update"
-   `((channel . ,agent-shell-to-go-channel-id)
-     (ts . ,msg-ts)
-     (text . ,text))))
-
-(defun agent-shell-to-go--get-thread-replies (thread-ts &optional oldest)
-  "Get replies in THREAD-TS, optionally newer than OLDEST."
-  (let* ((params (format "channel=%s&ts=%s" agent-shell-to-go-channel-id thread-ts))
-         (params (if oldest (concat params "&oldest=" oldest) params))
-         (response (agent-shell-to-go--api-request
-                    "GET"
-                    (concat "conversations.replies?" params))))
-    (alist-get 'messages response)))
-
 (defun agent-shell-to-go--get-reactions (msg-ts)
   "Get reactions on message MSG-TS."
   (let* ((response (agent-shell-to-go--api-request
@@ -167,7 +155,6 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
                             agent-shell-to-go-channel-id msg-ts)))
          (message (alist-get 'message response))
          (reactions (alist-get 'reactions message)))
-    ;; reactions is a vector of ((name . "x") (users . [...]) (count . N))
     (when reactions
       (append reactions nil))))
 
@@ -215,12 +202,149 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
                  (_ ":wrench:"))))
     (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200))))
 
+;;; WebSocket / Socket Mode
+
+(defun agent-shell-to-go--get-websocket-url ()
+  "Get WebSocket URL from Slack apps.connections.open API."
+  (let* ((url-request-method "POST")
+         (url-request-extra-headers
+          `(("Authorization" . ,(concat "Bearer " agent-shell-to-go-app-token))
+            ("Content-Type" . "application/x-www-form-urlencoded")))
+         (url "https://slack.com/api/apps.connections.open"))
+    (with-current-buffer (url-retrieve-synchronously url t)
+      (goto-char (point-min))
+      (re-search-forward "\n\n")
+      (let ((response (json-read)))
+        (kill-buffer)
+        (if (eq (alist-get 'ok response) t)
+            (alist-get 'url response)
+          (error "Failed to get WebSocket URL: %s" (alist-get 'error response)))))))
+
+(defun agent-shell-to-go--find-buffer-for-thread (thread-ts)
+  "Find the agent-shell buffer that corresponds to THREAD-TS."
+  (cl-find-if
+   (lambda (buf)
+     (and (buffer-live-p buf)
+          (equal thread-ts
+                 (buffer-local-value 'agent-shell-to-go--thread-ts buf))))
+   agent-shell-to-go--active-buffers))
+
+(defun agent-shell-to-go--handle-websocket-message (frame)
+  "Handle incoming WebSocket FRAME from Slack."
+  (let* ((payload (websocket-frame-text frame))
+         (data (json-read-from-string payload))
+         (type (alist-get 'type data))
+         (envelope-id (alist-get 'envelope_id data)))
+    ;; Acknowledge the event
+    (when envelope-id
+      (websocket-send-text agent-shell-to-go--websocket
+                           (json-encode `((envelope_id . ,envelope-id)))))
+    ;; Handle different event types
+    (pcase type
+      ("events_api"
+       (agent-shell-to-go--handle-event (alist-get 'payload data)))
+      ("hello"
+       (message "agent-shell-to-go: WebSocket connected"))
+      ("disconnect"
+       (message "agent-shell-to-go: WebSocket disconnect requested, reconnecting...")
+       (agent-shell-to-go--websocket-reconnect)))))
+
+(defun agent-shell-to-go--handle-event (payload)
+  "Handle Slack event PAYLOAD."
+  (let* ((event (alist-get 'event payload))
+         (event-type (alist-get 'type event)))
+    (pcase event-type
+      ("message"
+       (agent-shell-to-go--handle-message-event event))
+      ("reaction_added"
+       (agent-shell-to-go--handle-reaction-event event)))))
+
+(defun agent-shell-to-go--handle-message-event (event)
+  "Handle a message EVENT from Slack."
+  (let* ((thread-ts (alist-get 'thread_ts event))
+         (user (alist-get 'user event))
+         (text (alist-get 'text event))
+         (subtype (alist-get 'subtype event))
+         (bot-id (alist-get 'bot_id event))
+         (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts))))
+    ;; Only handle real user messages in threads we're tracking
+    (when (and buffer
+               text
+               (not subtype)
+               (not bot-id)
+               (not (equal user (agent-shell-to-go--get-bot-user-id))))
+      (with-current-buffer buffer
+        (if (string-prefix-p "!" text)
+            (agent-shell-to-go--handle-command text buffer thread-ts)
+          (message "agent-shell-to-go: received from Slack: %s" text)
+          (agent-shell-to-go--inject-message text))))))
+
+(defun agent-shell-to-go--handle-reaction-event (event)
+  "Handle a reaction EVENT from Slack."
+  (let* ((item (alist-get 'item event))
+         (msg-ts (alist-get 'ts item))
+         (reaction (alist-get 'reaction event))
+         (pending (assoc msg-ts agent-shell-to-go--pending-permissions)))
+    (when pending
+      (let* ((info (cdr pending))
+             (request-id (plist-get info :request-id))
+             (buffer (plist-get info :buffer))
+             (options (plist-get info :options))
+             (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
+        (when (and action buffer (buffer-live-p buffer))
+          (let ((option-id (agent-shell-to-go--find-option-id options action)))
+            (when option-id
+              (with-current-buffer buffer
+                (let ((state agent-shell--state))
+                  (agent-shell--send-permission-response
+                   :client (alist-get :client state)
+                   :request-id request-id
+                   :option-id option-id
+                   :state state)))
+              ;; Remove from pending
+              (setq agent-shell-to-go--pending-permissions
+                    (assq-delete-all msg-ts agent-shell-to-go--pending-permissions)))))))))
+
+(defun agent-shell-to-go--websocket-connect ()
+  "Connect to Slack via WebSocket."
+  (agent-shell-to-go--load-env)
+  (unless agent-shell-to-go-app-token
+    (error "agent-shell-to-go-app-token not set"))
+  (when agent-shell-to-go--websocket
+    (websocket-close agent-shell-to-go--websocket))
+  (let ((ws-url (agent-shell-to-go--get-websocket-url)))
+    (setq agent-shell-to-go--websocket
+          (websocket-open ws-url
+                          :on-message (lambda (_ws frame)
+                                        (agent-shell-to-go--handle-websocket-message frame))
+                          :on-close (lambda (_ws)
+                                      (message "agent-shell-to-go: WebSocket closed")
+                                      (agent-shell-to-go--websocket-reconnect))
+                          :on-error (lambda (_ws _type err)
+                                      (message "agent-shell-to-go: WebSocket error: %s" err))))))
+
+(defun agent-shell-to-go--websocket-reconnect ()
+  "Schedule WebSocket reconnection."
+  (when agent-shell-to-go--websocket-reconnect-timer
+    (cancel-timer agent-shell-to-go--websocket-reconnect-timer))
+  (when agent-shell-to-go--active-buffers
+    (setq agent-shell-to-go--websocket-reconnect-timer
+          (run-with-timer 5 nil #'agent-shell-to-go--websocket-connect))))
+
+(defun agent-shell-to-go--websocket-disconnect ()
+  "Disconnect WebSocket."
+  (when agent-shell-to-go--websocket-reconnect-timer
+    (cancel-timer agent-shell-to-go--websocket-reconnect-timer)
+    (setq agent-shell-to-go--websocket-reconnect-timer nil))
+  (when agent-shell-to-go--websocket
+    (websocket-close agent-shell-to-go--websocket)
+    (setq agent-shell-to-go--websocket nil)))
+
 ;;; Advice functions to hook into agent-shell
 
 (defun agent-shell-to-go--on-request (orig-fn &rest args)
   "Advice for agent-shell--on-request. Notify on permission requests.
 ORIG-FN is the original function, ARGS are its arguments."
-  ;; args is a plist like (:state STATE :request REQUEST)
   (let* ((state (plist-get args :state))
          (request (plist-get args :request))
          (method (alist-get 'method request))
@@ -228,10 +352,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (when (and buffer
                (buffer-live-p buffer)
                (equal method "session/request_permission"))
-      ;; Check for either new or old mode, get thread-ts from whichever is active
-      (let* ((thread-ts (or (buffer-local-value 'agent-shell-to-go--thread-ts buffer)
-                            (and (boundp 'agent-shell-slack--thread-ts)
-                                 (buffer-local-value 'agent-shell-slack--thread-ts buffer))))
+      (let* ((thread-ts (buffer-local-value 'agent-shell-to-go--thread-ts buffer))
              (request-id (alist-get 'id request))
              (params (alist-get 'params request))
              (options (alist-get 'options params))
@@ -246,8 +367,6 @@ ORIG-FN is the original function, ARGS are its arguments."
                                         (or command title "Unknown action"))
                                 thread-ts))
                      (msg-ts (alist-get 'ts response)))
-                ;; Store pending permission for reaction polling
-                ;; Only store what we need - not the whole state object
                 (when msg-ts
                   (push (cons msg-ts
                               (list :request-id request-id
@@ -267,7 +386,6 @@ ORIG-FN is the original function, ARGS are its arguments."
         (agent-shell-to-go--send
          (agent-shell-to-go--format-user-message prompt)
          agent-shell-to-go--thread-ts))))
-  ;; Reset message accumulator for new response
   (setq agent-shell-to-go--current-agent-message nil)
   (apply orig-fn args))
 
@@ -287,12 +405,10 @@ ORIG-FN is the original function, ARGS are its arguments."
         (when thread-ts
           (pcase update-type
             ("agent_message_chunk"
-             ;; Accumulate chunks, send when complete
              (let ((text (alist-get 'text (alist-get 'content update))))
                (with-current-buffer buffer
                  (setq agent-shell-to-go--current-agent-message
                        (concat agent-shell-to-go--current-agent-message text)))))
-
             ("tool_call_update"
              (let ((status (alist-get 'status update))
                    (title (or (alist-get 'command (alist-get 'rawInput update))
@@ -306,7 +422,6 @@ ORIG-FN is the original function, ARGS are its arguments."
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
   "Advice for agent-shell-heartbeat-stop. Flush agent message to Slack.
 ORIG-FN is the original function, ARGS are its arguments."
-  ;; Flush accumulated message before stopping
   (when (and agent-shell-to-go-mode
              agent-shell-to-go--thread-ts
              agent-shell-to-go--current-agent-message
@@ -317,11 +432,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (setq agent-shell-to-go--current-agent-message nil))
   (apply orig-fn args))
 
-;;; Polling for Slack replies
-
-(defun agent-shell-to-go--ts> (ts1 ts2)
-  "Return t if TS1 is newer than TS2 (Slack timestamps are decimal strings)."
-  (> (string-to-number ts1) (string-to-number ts2)))
+;;; Command handling
 
 (defun agent-shell-to-go--find-option-id (options action)
   "Find option ID in OPTIONS matching ACTION (allow, always, reject)."
@@ -335,93 +446,32 @@ ORIG-FN is the original function, ARGS are its arguments."
                     ('reject (member kind '("deny" "reject" "reject_once"))))
              return id)))
 
-(defun agent-shell-to-go--check-permission-reactions ()
-  "Check for reactions on pending permission messages and respond."
-  (let ((still-pending nil))
-    (dolist (pending agent-shell-to-go--pending-permissions)
-      (let* ((msg-ts (car pending))
-             (info (cdr pending))
-             (request-id (plist-get info :request-id))
-             (buffer (plist-get info :buffer))
-             (options (plist-get info :options))
-             (handled nil))
-        (condition-case err
-            (when (and buffer (buffer-live-p buffer))
-              (let ((reactions (agent-shell-to-go--get-reactions msg-ts)))
-                (cl-loop for reaction in reactions
-                         for name = (let ((n (alist-get 'name reaction)))
-                                      (if (symbolp n) (symbol-name n) n))
-                         for action = (alist-get name agent-shell-to-go--reaction-map
-                                                 nil nil #'string=)
-                         when action do
-                         (let ((option-id (agent-shell-to-go--find-option-id options action)))
-                           (when option-id
-                             (with-current-buffer buffer
-                               ;; Get state and client from buffer-local variable
-                               (let ((state agent-shell--state))
-                                 (agent-shell--send-permission-response
-                                  :client (alist-get :client state)
-                                  :request-id request-id
-                                  :option-id option-id
-                                  :state state)))
-                             (setq handled t))))))
-          (error (message "agent-shell-to-go reaction check error: %s" err)))
-        (unless handled
-          (push pending still-pending))))
-    (setq agent-shell-to-go--pending-permissions (nreverse still-pending))))
-
-(defun agent-shell-to-go--check-for-replies ()
-  "Check all active Slack threads for new replies and inject into agent-shell."
-  ;; Also check for permission reactions
-  (when agent-shell-to-go--pending-permissions
-    (agent-shell-to-go--check-permission-reactions))
-  (dolist (buffer agent-shell-to-go--active-buffers)
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (and agent-shell-to-go-mode agent-shell-to-go--thread-ts)
-          (condition-case err
-              (let* ((replies (agent-shell-to-go--get-thread-replies
-                               agent-shell-to-go--thread-ts
-                               agent-shell-to-go--last-seen-ts))
-                     (replies-list (append replies nil))  ; Convert vector to list
-                     (bot-user-id (agent-shell-to-go--get-bot-user-id)))
-                (dolist (reply replies-list)
-                  (let ((ts (alist-get 'ts reply))
-                        (user (alist-get 'user reply))
-                        (text (alist-get 'text reply)))
-                    ;; Skip bot's own messages and already-seen messages
-                    (when (and text
-                               (not (equal user bot-user-id))
-                               (or (null agent-shell-to-go--last-seen-ts)
-                                   (agent-shell-to-go--ts> ts agent-shell-to-go--last-seen-ts)))
-                      (setq agent-shell-to-go--last-seen-ts ts)
-                      ;; Check for commands first
-                      (if (string-prefix-p "!" text)
-                          (agent-shell-to-go--handle-command
-                           text (current-buffer) agent-shell-to-go--thread-ts)
-                        ;; Regular message - inject into agent-shell
-                        (message "agent-shell-to-go: received from Slack: %s" text)
-                        (agent-shell-to-go--inject-message text))))))
-            (error (message "agent-shell-to-go poll error: %s" err))))))))
+(defun agent-shell-to-go--set-mode (buffer mode-id thread-ts mode-name emoji)
+  "Set MODE-ID in BUFFER, notify THREAD-TS with MODE-NAME and EMOJI."
+  (with-current-buffer buffer
+    (agent-shell--set-default-session-mode
+     :shell nil
+     :mode-id mode-id
+     :on-mode-changed (lambda ()
+                        (agent-shell-to-go--send
+                         (format "%s Mode: *%s*" emoji mode-name)
+                         thread-ts)))))
 
 (defun agent-shell-to-go--handle-command (text buffer thread-ts)
   "Handle command TEXT in BUFFER, reply to THREAD-TS."
   (let ((cmd (downcase (string-trim text))))
     (pcase cmd
       ((or "!yolo" "!bypass")
-       (with-current-buffer buffer
-         (agent-shell-set-session-mode "bypassPermissions"))
-       (agent-shell-to-go--send ":zap: Mode: *Bypass Permissions*" thread-ts)
+       (agent-shell-to-go--set-mode buffer "bypassPermissions" thread-ts
+                                    "Bypass Permissions" ":zap:")
        t)
       ((or "!safe" "!accept" "!acceptedits")
-       (with-current-buffer buffer
-         (agent-shell-set-session-mode "acceptEdits"))
-       (agent-shell-to-go--send ":shield: Mode: *Accept Edits*" thread-ts)
+       (agent-shell-to-go--set-mode buffer "acceptEdits" thread-ts
+                                    "Accept Edits" ":shield:")
        t)
       ((or "!plan" "!planmode")
-       (with-current-buffer buffer
-         (agent-shell-set-session-mode "plan"))
-       (agent-shell-to-go--send ":clipboard: Mode: *Plan*" thread-ts)
+       (agent-shell-to-go--set-mode buffer "plan" thread-ts
+                                    "Plan" ":clipboard:")
        t)
       ("!mode"
        (with-current-buffer buffer
@@ -437,7 +487,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                 "`!mode` - Show current mode")
         thread-ts)
        t)
-      (_ nil)))) ; Return nil if not a recognized command
+      (_ nil))))
 
 (defun agent-shell-to-go--inject-message (text)
   "Inject TEXT from Slack into the current agent-shell buffer."
@@ -448,43 +498,30 @@ ORIG-FN is the original function, ARGS are its arguments."
     (goto-char (point-max))
     (call-interactively #'shell-maker-submit)))
 
-(defun agent-shell-to-go--start-polling ()
-  "Start the Slack polling timer."
-  (unless agent-shell-to-go--poll-timer
-    (setq agent-shell-to-go--poll-timer
-          (run-with-timer agent-shell-to-go-poll-interval
-                          agent-shell-to-go-poll-interval
-                          #'agent-shell-to-go--check-for-replies))))
-
-(defun agent-shell-to-go--stop-polling ()
-  "Stop the Slack polling timer if no active buffers."
-  (when (and agent-shell-to-go--poll-timer
-             (null agent-shell-to-go--active-buffers))
-    (cancel-timer agent-shell-to-go--poll-timer)
-    (setq agent-shell-to-go--poll-timer nil)))
-
 ;;; Minor mode
 
 (defun agent-shell-to-go--enable ()
   "Enable Slack mirroring for this buffer."
-  ;; Load credentials from .env if needed
   (agent-shell-to-go--load-env)
 
   (unless agent-shell-to-go-bot-token
     (error "agent-shell-to-go-bot-token not set. See agent-shell-to-go-env-file"))
   (unless agent-shell-to-go-channel-id
     (error "agent-shell-to-go-channel-id not set. See agent-shell-to-go-env-file"))
+  (unless agent-shell-to-go-app-token
+    (error "agent-shell-to-go-app-token not set. See agent-shell-to-go-env-file"))
 
   ;; Start a new Slack thread for this session
   (setq agent-shell-to-go--thread-ts
         (agent-shell-to-go--start-thread (buffer-name)))
-  (setq agent-shell-to-go--last-seen-ts agent-shell-to-go--thread-ts)
 
   ;; Track this buffer
   (add-to-list 'agent-shell-to-go--active-buffers (current-buffer))
 
-  ;; Start polling
-  (agent-shell-to-go--start-polling)
+  ;; Connect WebSocket if not already connected
+  (unless (and agent-shell-to-go--websocket
+               (websocket-openp agent-shell-to-go--websocket))
+    (agent-shell-to-go--websocket-connect))
 
   ;; Add advice
   (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
@@ -496,7 +533,6 @@ ORIG-FN is the original function, ARGS are its arguments."
 
 (defun agent-shell-to-go--disable ()
   "Disable Slack mirroring for this buffer."
-  ;; Send goodbye
   (when agent-shell-to-go--thread-ts
     (agent-shell-to-go--send ":wave: Session ended" agent-shell-to-go--thread-ts))
 
@@ -504,11 +540,9 @@ ORIG-FN is the original function, ARGS are its arguments."
   (setq agent-shell-to-go--active-buffers
         (delete (current-buffer) agent-shell-to-go--active-buffers))
 
-  ;; Stop polling if no more active buffers
-  (agent-shell-to-go--stop-polling)
-
-  ;; Remove advice only if no more active buffers
+  ;; Disconnect WebSocket if no more active buffers
   (unless agent-shell-to-go--active-buffers
+    (agent-shell-to-go--websocket-disconnect)
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)

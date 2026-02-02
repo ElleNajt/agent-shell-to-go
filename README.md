@@ -233,6 +233,7 @@ React to messages in the thread:
 | Emoji | Action |
 |-------|--------|
 | :heart: (or other hearts) | Send appreciation to the agent ("The user heart reacted to: ...") |
+| :bookmark: | Create an org-mode TODO file from the message (scheduled for today) |
 
 Long messages are automatically truncated to 500 characters with `:eyes: _for more_` at the end. Add the :eyes: reaction to see the full content.
 
@@ -276,7 +277,7 @@ To auto-create directories without prompting, add this to your config:
 ## Roadmap
 
 - [x] Image uploads - images written by the agent are automatically uploaded to Slack
-- [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
+- [x] Bookmarks - bookmark reaction creates org-mode TODO scheduled for today
 - [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically
 - [ ] Matrix integration

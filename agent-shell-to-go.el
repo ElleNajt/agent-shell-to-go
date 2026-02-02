@@ -322,6 +322,15 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
   '("heart" "heart_eyes" "heartpulse" "sparkling_heart" "two_hearts" "revolving_hearts")
   "Reactions that send appreciation to the agent.")
 
+(defconst agent-shell-to-go--bookmark-reactions
+  '("bookmark")
+  "Reactions that create a TODO from the message.")
+
+(defcustom agent-shell-to-go-todo-directory "~/org/todo/"
+  "Directory where bookmark TODOs are saved as org files."
+  :type 'string
+  :group 'agent-shell-to-go)
+
 (defcustom agent-shell-to-go-hidden-messages-dir "~/.agent-shell/slack/"
   "Directory to store original content of hidden messages.
 Messages are stored as CHANNEL/TIMESTAMP.txt files."
@@ -799,6 +808,44 @@ Sends the message content to the agent as appreciation feedback."
         (agent-shell-to-go--inject-message
          (format "The user heart reacted to: %s" message-text))))))
 
+(defun agent-shell-to-go--handle-bookmark-reaction (channel ts)
+  "Handle bookmark reaction on message at TS in CHANNEL.
+Creates an org TODO file with the message content."
+  (let* ((buffer (agent-shell-to-go--find-buffer-for-channel channel))
+         (thread-ts (and buffer (buffer-local-value 'agent-shell-to-go--thread-ts buffer)))
+         (message-text (agent-shell-to-go--get-message-text channel ts thread-ts))
+         (project-name (and buffer
+                            (with-current-buffer buffer
+                              (file-name-nondirectory
+                               (directory-file-name default-directory)))))
+         (today (format-time-string "%Y-%m-%d"))
+         (timestamp (format-time-string "%Y%m%d-%H%M%S"))
+         (todo-dir (expand-file-name agent-shell-to-go-todo-directory))
+         (todo-file (expand-file-name (format "%s-%s.org" project-name timestamp) todo-dir))
+         ;; Truncate message for title (first line, max 60 chars)
+         (title-text (if message-text
+                         (let ((first-line (car (split-string message-text "\n" t))))
+                           (if (> (length first-line) 60)
+                               (concat (substring first-line 0 57) "...")
+                             first-line))
+                       "Bookmarked message")))
+    (when message-text
+      ;; Ensure directory exists
+      (make-directory todo-dir t)
+      ;; Write org file
+      (with-temp-file todo-file
+        (insert (format "* TODO %s\n" title-text))
+        (insert (format "SCHEDULED: <%s>\n\n" today))
+        (insert (format "Project: %s\n\n" (or project-name "unknown")))
+        (insert "** Message\n")
+        (insert message-text)
+        (insert "\n"))
+      ;; Notify in Slack
+      (when (and buffer thread-ts)
+        (agent-shell-to-go--send
+         (format ":bookmark: TODO created: `%s`" (file-name-nondirectory todo-file))
+         thread-ts)))))
+
 (defun agent-shell-to-go--collapse-message (channel ts)
   "Re-truncate expanded message at TS in CHANNEL."
   (let* ((full-text (agent-shell-to-go--load-truncated-message channel ts))
@@ -864,6 +911,10 @@ Sends the message content to the agent as appreciation feedback."
     (when (member reaction agent-shell-to-go--heart-reactions)
       (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
       (agent-shell-to-go--handle-heart-reaction channel msg-ts))
+    ;; Check for bookmark reactions (create TODO)
+    (when (member reaction agent-shell-to-go--bookmark-reactions)
+      (agent-shell-to-go--debug "bookmark reaction: %s on %s" reaction msg-ts)
+      (agent-shell-to-go--handle-bookmark-reaction channel msg-ts))
     ;; Then check for permission reactions
     (when pending
       (let* ((info (cdr pending))

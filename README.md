@@ -27,7 +27,7 @@ Planned/possible integrations:
 - Permission requests with reaction-based approval
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
 - Start new agents remotely via slash commands
-- **Image uploads** - images written by the agent are automatically uploaded to Slack
+- **Image uploads** - images created anywhere in the project are automatically uploaded to Slack (requires `fswatch`)
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
 ## Security Warning
@@ -175,6 +175,11 @@ Make sure this file is gitignored if your config is in a repository.
 ```
 
 Requires the `websocket` package (available on MELPA).
+
+For automatic image uploads, install fswatch:
+```bash
+brew install fswatch  # macOS
+```
 
 ## Usage
 

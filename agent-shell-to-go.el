@@ -267,6 +267,21 @@ Returns the channel ID."
 (defvar-local agent-shell-to-go--uploaded-images nil
   "Hash table of image paths already uploaded, to avoid duplicates.")
 
+(defvar-local agent-shell-to-go--upload-timestamps nil
+  "List of recent upload timestamps for rate limiting.")
+
+(defcustom agent-shell-to-go-image-upload-rate-limit 5
+  "Maximum number of images to upload per minute.
+Set to nil to disable rate limiting."
+  :type '(choice (integer :tag "Max uploads per minute")
+          (const :tag "No limit" nil))
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-image-upload-rate-window 60
+  "Time window in seconds for rate limiting."
+  :type 'integer
+  :group 'agent-shell-to-go)
+
 (defvar agent-shell-to-go--pending-permissions nil
   "Alist of pending permission requests.
 Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
@@ -342,6 +357,24 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
     (let ((ext (downcase (or (file-name-extension path) ""))))
       (member ext agent-shell-to-go--image-extensions))))
 
+(defun agent-shell-to-go--check-upload-rate-limit ()
+  "Check if we're within rate limit. Returns t if upload is allowed."
+  (if (not agent-shell-to-go-image-upload-rate-limit)
+      t  ; No limit configured
+    (let* ((now (float-time))
+           (window-start (- now agent-shell-to-go-image-upload-rate-window)))
+      ;; Prune old timestamps
+      (setq agent-shell-to-go--upload-timestamps
+            (cl-remove-if (lambda (ts) (< ts window-start))
+                          agent-shell-to-go--upload-timestamps))
+      ;; Check if under limit
+      (< (length agent-shell-to-go--upload-timestamps)
+         agent-shell-to-go-image-upload-rate-limit))))
+
+(defun agent-shell-to-go--record-upload ()
+  "Record an upload timestamp for rate limiting."
+  (push (float-time) agent-shell-to-go--upload-timestamps))
+
 (defun agent-shell-to-go--handle-fswatch-output (buffer output)
   "Handle fswatch OUTPUT, uploading new images for BUFFER."
   (when (buffer-live-p buffer)
@@ -355,21 +388,25 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
             (setq agent-shell-to-go--uploaded-images (make-hash-table :test 'equal)))
           ;; Check if already uploaded
           (unless (gethash file-path agent-shell-to-go--uploaded-images)
-            ;; Mark as uploaded
-            (puthash file-path t agent-shell-to-go--uploaded-images)
-            ;; Small delay to ensure file is fully written
-            (run-at-time 0.5 nil
-                         (lambda ()
-                           (when (and (buffer-live-p buffer)
-                                      (file-exists-p file-path))
-                             (with-current-buffer buffer
-                               (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
-                               (agent-shell-to-go--upload-file
-                                file-path
-                                agent-shell-to-go--channel-id
-                                agent-shell-to-go--thread-ts
-                                (format ":frame_with_picture: `%s`"
-                                        (file-name-nondirectory file-path)))))))))))))
+            ;; Check rate limit
+            (if (not (agent-shell-to-go--check-upload-rate-limit))
+                (agent-shell-to-go--debug "rate limit exceeded, skipping: %s" file-path)
+              ;; Mark as uploaded
+              (puthash file-path t agent-shell-to-go--uploaded-images)
+              ;; Small delay to ensure file is fully written
+              (run-at-time 0.5 nil
+                           (lambda ()
+                             (when (and (buffer-live-p buffer)
+                                        (file-exists-p file-path))
+                               (with-current-buffer buffer
+                                 (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
+                                 (agent-shell-to-go--record-upload)
+                                 (agent-shell-to-go--upload-file
+                                  file-path
+                                  agent-shell-to-go--channel-id
+                                  agent-shell-to-go--thread-ts
+                                  (format ":frame_with_picture: `%s`"
+                                          (file-name-nondirectory file-path))))))))))))))
 
 (defun agent-shell-to-go--start-file-watcher ()
   "Start fswatch for new image files in the project directory (recursive)."
@@ -1152,6 +1189,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                 "`!plan` - Plan mode\n"
                 "`!mode` - Show current mode\n"
                 "`!stop` - Interrupt the agent\n"
+                "`!restart` - Kill and restart agent with transcript\n"
                 "`!latest` - Jump to bottom of thread")
         thread-ts)
        t)
@@ -1203,6 +1241,42 @@ ORIG-FN is the original function, ARGS are its arguments."
          (error
           (agent-shell-to-go--debug "!stop error: %s" err)
           (agent-shell-to-go--send (format ":x: Stop failed: %s" err) thread-ts)))
+       t)
+      ("!restart"
+       (condition-case err
+           (with-current-buffer buffer
+             (let* ((project-dir default-directory)
+                    (state agent-shell--state)
+                    (session-id (map-nested-elt state '(:session :id)))
+                    (transcript-dir (expand-file-name "transcripts"
+                                                      (or (bound-and-true-p agent-shell-sessions-dir)
+                                                          "~/.agent-shell")))
+                    (transcript-file (and session-id
+                                          (expand-file-name (concat session-id ".md")
+                                                            transcript-dir)))
+                    (transcript-exists (and transcript-file (file-exists-p transcript-file))))
+               ;; Notify about restart
+               (agent-shell-to-go--send ":arrows_counterclockwise: Restarting agent..." thread-ts)
+               ;; Kill current agent
+               (ignore-errors (agent-shell-interrupt t))
+               ;; Start new agent in same directory
+               (run-at-time 1 nil
+                            (lambda ()
+                              (let ((default-directory project-dir))
+                                (save-window-excursion
+                                  (funcall agent-shell-to-go-start-agent-function nil)
+                                  ;; If transcript exists, tell the new agent about it
+                                  (when transcript-exists
+                                    (run-at-time 2 nil
+                                                 (lambda ()
+                                                   (when-let ((new-buf (car agent-shell-to-go--active-buffers)))
+                                                     (with-current-buffer new-buf
+                                                       (agent-shell-to-go--inject-message
+                                                        (format "Continue from previous session. Transcript at: %s"
+                                                                transcript-file)))))))))))))
+         (error
+          (agent-shell-to-go--debug "!restart error: %s" err)
+          (agent-shell-to-go--send (format ":x: Restart failed: %s" err) thread-ts)))
        t)
       (_ nil))))
 

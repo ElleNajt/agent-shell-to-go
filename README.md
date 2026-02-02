@@ -1,28 +1,39 @@
 # agent-shell-to-go
 
-Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhere. Chat with your AI agents from your phone via Slack.
+Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhere. Chat with your AI agents from your phone or any device.
+
+## Overview
+
+agent-shell-to-go mirrors your agent-shell conversations to external messaging platforms, enabling bidirectional communication. Send messages from your phone, approve permissions on the go, and monitor your AI agents from anywhere.
+
+Currently supported:
+- **Slack** (via Socket Mode)
+
+Planned/possible integrations:
+- Matrix
+- Discord
+- Telegram
 
 ## Features
 
-- Each agent-shell session gets its own Slack thread
-- Messages you send from Emacs appear in Slack
-- Messages you send from Slack get injected back into agent-shell
-- Real-time via Slack Socket Mode (WebSocket) - no polling delay
-- Permission requests appear in Slack with emoji reactions to approve/reject
+- Each agent-shell session gets its own thread/room
+- Messages flow bidirectionally (Emacs ↔ messaging platform)
+- Real-time updates via WebSocket
+- Permission requests with reaction-based approval
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
-- Slash commands to start new agents from Slack (`/new-agent`, `/projects`)
+- Start new agents remotely via slash commands
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
 ## Security Warning
 
-**Anyone with access to your Slack channel can control your agent-shell sessions.** This includes:
+**Anyone with access to your messaging channel can control your agent-shell sessions.** This includes:
 - Sending prompts to Claude Code running on your machine
 - Approving permission requests (file edits, command execution, etc.)
 - Starting new agent sessions via slash commands
 
-This is powerful but risky. Be mindful of who has access to your Slack channel. Consider using a private channel with restricted membership.
+This is powerful but risky. Be mindful of who has access to your channel. Consider using a private channel with restricted membership.
 
-## Setup
+## Slack Setup
 
 ### 1. Create a Slack App
 

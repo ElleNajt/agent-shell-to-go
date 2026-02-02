@@ -229,6 +229,7 @@ When Claude requests permission (e.g., to run a command), you'll see a message i
 
 - [ ] Image fetching - view images/screenshots from agent responses (via `files.upload` API, needs `files:write` scope)
 - [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
+- [ ] Better UTF-8 and unicode handling (currently stripped to ASCII)
 - [ ] Matrix integration
 - [ ] Discord integration
 - [ ] Telegram integration

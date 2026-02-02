@@ -135,6 +135,8 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
 (defvar-local agent-shell-to-go--from-slack nil
   "Non-nil when the current message originated from Slack (to prevent echo).")
 
+
+
 (defvar agent-shell-to-go--websocket nil
   "The WebSocket connection to Slack.")
 
@@ -537,15 +539,26 @@ ORIG-FN is the original function, ARGS are its arguments."
                  (setq agent-shell-to-go--current-agent-message
                        (concat agent-shell-to-go--current-agent-message text)))))
             ("tool_call"
-             ;; Tool call starting - show the command
+             ;; Tool call starting - show command or title
+             ;; First flush any pending agent message so order is preserved
+             (with-current-buffer buffer
+               (when (and agent-shell-to-go--current-agent-message
+                          (> (length agent-shell-to-go--current-agent-message) 0))
+                 (agent-shell-to-go--send
+                  (agent-shell-to-go--format-agent-message agent-shell-to-go--current-agent-message)
+                  thread-ts)
+                 (setq agent-shell-to-go--current-agent-message nil)))
              (let* ((title (alist-get 'title update))
                     (raw-input (alist-get 'rawInput update))
                     (command (alist-get 'command raw-input))
-                    (display-title (or command title)))
-               (when display-title
+                    (file-path (alist-get 'file_path raw-input))
+                    (display (or command
+                                 file-path
+                                 title)))
+               (when display
                  (agent-shell-to-go--send
-                  (format ":hourglass: `%s`" 
-                          (agent-shell-to-go--truncate-message display-title 500))
+                  (format ":hourglass: `%s`"
+                          (agent-shell-to-go--truncate-message display 500))
                   thread-ts))))
             ("tool_call_update"
              ;; Tool call completed - show output

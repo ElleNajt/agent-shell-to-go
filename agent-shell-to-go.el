@@ -270,7 +270,7 @@ Returns the channel ID."
 (defvar-local agent-shell-to-go--upload-timestamps nil
   "List of recent upload timestamps for rate limiting.")
 
-(defcustom agent-shell-to-go-image-upload-rate-limit 5
+(defcustom agent-shell-to-go-image-upload-rate-limit 30
   "Maximum number of images to upload per minute.
 Set to nil to disable rate limiting."
   :type '(choice (integer :tag "Max uploads per minute")

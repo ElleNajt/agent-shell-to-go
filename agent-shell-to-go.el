@@ -811,17 +811,26 @@ Sends the message content to the agent as appreciation feedback."
 (defun agent-shell-to-go--handle-bookmark-reaction (channel ts)
   "Handle bookmark reaction on message at TS in CHANNEL.
 Creates an org TODO file with the message content."
+  ;; Try to find the buffer for this channel to get thread context
   (let* ((buffer (agent-shell-to-go--find-buffer-for-channel channel))
          (thread-ts (and buffer (buffer-local-value 'agent-shell-to-go--thread-ts buffer)))
-         (message-text (agent-shell-to-go--get-message-text channel ts thread-ts))
-         (project-name (and buffer
-                            (with-current-buffer buffer
-                              (file-name-nondirectory
-                               (directory-file-name default-directory)))))
+         ;; For threaded messages, ts might be different from thread-ts
+         ;; Try to get message with thread context if available
+         (message-text (or (and thread-ts (agent-shell-to-go--get-message-text channel ts thread-ts))
+                           (agent-shell-to-go--get-message-text channel ts nil)))
+         (project-name (or (and buffer
+                                (with-current-buffer buffer
+                                  (file-name-nondirectory
+                                   (directory-file-name default-directory))))
+                           ;; Fallback: get project from channel mapping
+                           (let ((project-path (agent-shell-to-go--get-project-for-channel channel)))
+                             (and project-path
+                                  (file-name-nondirectory
+                                   (directory-file-name project-path))))))
          (today (format-time-string "%Y-%m-%d"))
          (timestamp (format-time-string "%Y%m%d-%H%M%S"))
          (todo-dir (expand-file-name agent-shell-to-go-todo-directory))
-         (todo-file (expand-file-name (format "%s-%s.org" project-name timestamp) todo-dir))
+         (todo-file (expand-file-name (format "%s-%s.org" (or project-name "slack") timestamp) todo-dir))
          ;; Truncate message for title (first line, max 60 chars)
          (title-text (if message-text
                          (let ((first-line (car (split-string message-text "\n" t))))
@@ -840,11 +849,11 @@ Creates an org TODO file with the message content."
         (insert "** Message\n")
         (insert message-text)
         (insert "\n"))
-      ;; Notify in Slack
-      (when (and buffer thread-ts)
-        (agent-shell-to-go--send
-         (format ":bookmark: TODO created: `%s`" (file-name-nondirectory todo-file))
-         thread-ts)))))
+      ;; Notify in Slack - try to reply in thread if we know it
+      (agent-shell-to-go--send
+       (format ":bookmark: TODO created: `%s`" (file-name-nondirectory todo-file))
+       (or thread-ts ts)
+       channel))))
 
 (defun agent-shell-to-go--collapse-message (channel ts)
   "Re-truncate expanded message at TS in CHANNEL."

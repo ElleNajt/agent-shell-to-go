@@ -20,7 +20,8 @@ Planned/possible integrations:
 
 ## Features
 
-- Each agent-shell session gets its own thread/room
+- **Per-project channels** - each project gets its own Slack channel automatically
+- Each agent-shell session gets its own thread within the project channel
 - Messages flow bidirectionally (Emacs ↔ messaging platform)
 - Real-time updates via WebSocket
 - Permission requests with reaction-based approval
@@ -137,6 +138,7 @@ Skip to [Configure credentials](#2-configure-credentials).
 (setq agent-shell-to-go-bot-token (my/keychain-get "agent-shell-to-go" "bot-token"))
 (setq agent-shell-to-go-channel-id (my/keychain-get "agent-shell-to-go" "channel-id"))
 (setq agent-shell-to-go-app-token (my/keychain-get "agent-shell-to-go" "app-token"))
+(setq agent-shell-to-go-user-id (my/keychain-get "agent-shell-to-go" "user-id"))
 ```
 
 To add credentials to Keychain:
@@ -144,7 +146,10 @@ To add credentials to Keychain:
 security add-generic-password -s "agent-shell-to-go" -a "bot-token" -w "xoxb-your-token"
 security add-generic-password -s "agent-shell-to-go" -a "channel-id" -w "C0123456789"
 security add-generic-password -s "agent-shell-to-go" -a "app-token" -w "xapp-your-token"
+security add-generic-password -s "agent-shell-to-go" -a "user-id" -w "U0123456789"
 ```
+
+To get your user ID: click your profile in Slack → three dots → "Copy member ID".
 
 #### Option C: Using .env file (less secure)
 
@@ -201,15 +206,16 @@ Use these anywhere in the channel (not in threads):
 | `/new-agent-container [folder]` | Start a new agent in a container (like `C-u` prefix) |
 | `/projects` | List open projects from Emacs (each as a separate message for easy copy) |
 
-### Permission Reactions
+### Reactions
 
-When Claude requests permission (e.g., to run a command), you'll see a message in Slack. React with:
+React to any message in the thread:
 
 | Emoji | Action |
 |-------|--------|
-| :white_check_mark: or :+1: | Allow once |
-| :unlock: or :star: | Always allow |
-| :x: or :-1: | Reject |
+| :white_check_mark: or :+1: | Allow permission once |
+| :unlock: or :star: | Always allow permission |
+| :x: or :-1: | Reject permission |
+| :see_no_evil: or :no_bell: or :eyes: | Hide message (remove reaction to unhide) |
 
 ## Customization
 
@@ -234,6 +240,7 @@ When Claude requests permission (e.g., to run a command), you'll see a message i
 - [ ] Image fetching - view images/screenshots from agent responses (via `files.upload` API, needs `files:write` scope)
 - [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
 - [ ] Better UTF-8 and unicode handling (currently stripped to ASCII)
+- [x] Per-project channels - each project gets its own Slack channel automatically
 - [ ] Matrix integration
 - [ ] Discord integration
 - [ ] Telegram integration

@@ -60,7 +60,26 @@
   :group 'agent-shell-to-go)
 
 (defcustom agent-shell-to-go-channel-id nil
-  "Slack channel ID to post to. Loaded from .env if nil."
+  "Default Slack channel ID to post to. Loaded from .env if nil.
+When `agent-shell-to-go-per-project-channels' is non-nil, this is used
+as a fallback when no project-specific channel exists."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-per-project-channels t
+  "When non-nil, create a separate Slack channel for each project.
+Channels are named based on the project directory name."
+  :type 'boolean
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-channel-prefix "agent-"
+  "Prefix for auto-created project channels."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-channels-file
+  (expand-file-name "agent-shell-to-go-channels.el" user-emacs-directory)
+  "File to persist project-to-channel mappings."
   :type 'string
   :group 'agent-shell-to-go)
 
@@ -115,6 +134,120 @@ Override this if you have a custom agent-shell starter function."
              (unless agent-shell-to-go-app-token
                (setq agent-shell-to-go-app-token value)))))))))
 
+(defun agent-shell-to-go--load-channels ()
+  "Load project-to-channel mappings from file."
+  (when (file-exists-p agent-shell-to-go-channels-file)
+    (with-temp-buffer
+      (insert-file-contents agent-shell-to-go-channels-file)
+      (let ((data (read (current-buffer))))
+        (clrhash agent-shell-to-go--project-channels)
+        (dolist (pair data)
+          (puthash (car pair) (cdr pair) agent-shell-to-go--project-channels))))))
+
+(defun agent-shell-to-go--save-channels ()
+  "Save project-to-channel mappings to file."
+  (with-temp-file agent-shell-to-go-channels-file
+    (let ((data nil))
+      (maphash (lambda (k v) (push (cons k v) data))
+               agent-shell-to-go--project-channels)
+      (prin1 data (current-buffer)))))
+
+(defun agent-shell-to-go--sanitize-channel-name (name)
+  "Sanitize NAME for use as a Slack channel name.
+Lowercase, replace spaces/underscores with hyphens, max 80 chars."
+  (let* ((clean (downcase name))
+         (clean (replace-regexp-in-string "[^a-z0-9-]" "-" clean))
+         (clean (replace-regexp-in-string "-+" "-" clean))
+         (clean (replace-regexp-in-string "^-\\|-$" "" clean)))
+    (if (> (length clean) 80)
+        (substring clean 0 80)
+      clean)))
+
+(defun agent-shell-to-go--get-project-path ()
+  "Get the project path for the current buffer."
+  (or (and (fboundp 'projectile-project-root) (projectile-project-root))
+      (and (fboundp 'project-current)
+           (when-let ((proj (project-current)))
+             (if (fboundp 'project-root)
+                 (project-root proj)
+               (car (project-roots proj)))))
+      default-directory))
+
+(defun agent-shell-to-go--invite-user-to-channel (channel-id user-id)
+  "Invite USER-ID to CHANNEL-ID."
+  (agent-shell-to-go--api-request
+   "POST" "conversations.invite"
+   `((channel . ,channel-id)
+     (users . ,user-id))))
+
+(defun agent-shell-to-go--get-owner-user-id ()
+  "Get the user ID of the workspace owner or first admin.
+Falls back to getting the authed user from a recent message."
+  ;; Try to get from auth.test - this gives us info about who installed the app
+  (let* ((response (agent-shell-to-go--api-request "GET" "auth.test"))
+         (user-id (alist-get 'user_id response)))
+    ;; The bot's user_id is returned, but we need the installing user
+    ;; We'll use the SLACK_USER_ID env var if set, otherwise skip invite
+    nil))
+
+(defcustom agent-shell-to-go-user-id nil
+  "Your Slack user ID for auto-invite to new channels.
+Find this in Slack: click your profile -> three dots -> Copy member ID."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defun agent-shell-to-go--create-channel (name)
+  "Create a Slack channel with NAME. Return channel ID or nil on failure."
+  (let* ((response (agent-shell-to-go--api-request
+                    "POST" "conversations.create"
+                    `((name . ,name)
+                      (is_private . :json-false))))
+         (ok (alist-get 'ok response))
+         (channel (alist-get 'channel response))
+         (channel-id (alist-get 'id channel))
+         (error-msg (alist-get 'error response)))
+    (cond
+     (ok
+      ;; Auto-invite user if configured
+      (when agent-shell-to-go-user-id
+        (agent-shell-to-go--invite-user-to-channel channel-id agent-shell-to-go-user-id))
+      channel-id)
+     ((equal error-msg "name_taken")
+      ;; Channel exists, try to find it
+      (agent-shell-to-go--find-channel-by-name name))
+     (t
+      (agent-shell-to-go--debug "Failed to create channel %s: %s" name error-msg)
+      nil))))
+
+(defun agent-shell-to-go--find-channel-by-name (name)
+  "Find a channel by NAME, return its ID or nil."
+  (let* ((response (agent-shell-to-go--api-request
+                    "GET" (format "conversations.list?types=public_channel,private_channel&limit=1000")))
+         (channels (alist-get 'channels response)))
+    (when channels
+      (cl-loop for channel across channels
+               when (equal (alist-get 'name channel) name)
+               return (alist-get 'id channel)))))
+
+(defun agent-shell-to-go--get-or-create-project-channel ()
+  "Get or create a Slack channel for the current project.
+Returns the channel ID."
+  (if (not agent-shell-to-go-per-project-channels)
+      agent-shell-to-go-channel-id
+    (let* ((project-path (agent-shell-to-go--get-project-path))
+           (cached-id (gethash project-path agent-shell-to-go--project-channels)))
+      (or cached-id
+          (let* ((project-name (file-name-nondirectory
+                                (directory-file-name project-path)))
+                 (channel-name (concat agent-shell-to-go-channel-prefix
+                                       (agent-shell-to-go--sanitize-channel-name project-name)))
+                 (channel-id (agent-shell-to-go--create-channel channel-name)))
+            (when channel-id
+              (puthash project-path channel-id agent-shell-to-go--project-channels)
+              (agent-shell-to-go--save-channels)
+              (agent-shell-to-go--debug "Created/found channel %s for %s" channel-name project-path))
+            (or channel-id agent-shell-to-go-channel-id))))))
+
 ;; Internal state
 (defvar-local agent-shell-to-go--thread-ts nil
   "Slack thread timestamp for this buffer's conversation.")
@@ -135,7 +268,11 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
 (defvar-local agent-shell-to-go--from-slack nil
   "Non-nil when the current message originated from Slack (to prevent echo).")
 
+(defvar-local agent-shell-to-go--channel-id nil
+  "The Slack channel ID for this buffer (may differ from default if per-project).")
 
+(defvar agent-shell-to-go--project-channels (make-hash-table :test 'equal)
+  "Hash table mapping project paths to Slack channel IDs.")
 
 (defvar agent-shell-to-go--websocket nil
   "The WebSocket connection to Slack.")
@@ -151,6 +288,16 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
     ("x" . reject)
     ("-1" . reject))
   "Map Slack reaction names to permission actions.")
+
+(defconst agent-shell-to-go--hide-reactions
+  '("no_bell" "see_no_evil" "eyes")
+  "Reactions that trigger hiding a message.")
+
+(defcustom agent-shell-to-go-hidden-messages-dir "~/.agent-shell/slack/"
+  "Directory to store original content of hidden messages.
+Messages are stored as CHANNEL/TIMESTAMP.txt files."
+  :type 'string
+  :group 'agent-shell-to-go)
 
 ;;; Slack API
 
@@ -172,10 +319,14 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
         (kill-buffer)
         response))))
 
-(defun agent-shell-to-go--send (text &optional thread-ts)
-  "Send TEXT to Slack, optionally in THREAD-TS thread."
-  (let ((data `((channel . ,agent-shell-to-go-channel-id)
-                (text . ,(agent-shell-to-go--strip-non-ascii text)))))
+(defun agent-shell-to-go--send (text &optional thread-ts channel-id)
+  "Send TEXT to Slack, optionally in THREAD-TS thread.
+CHANNEL-ID overrides the buffer-local or default channel."
+  (let* ((channel (or channel-id
+                      agent-shell-to-go--channel-id
+                      agent-shell-to-go-channel-id))
+         (data `((channel . ,channel)
+                 (text . ,(agent-shell-to-go--strip-non-ascii text)))))
     (when thread-ts
       (push `(thread_ts . ,thread-ts) data))
     (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
@@ -258,13 +409,17 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
             (alist-get 'url response)
           (error "Failed to get WebSocket URL: %s" (alist-get 'error response)))))))
 
-(defun agent-shell-to-go--find-buffer-for-thread (thread-ts)
-  "Find the agent-shell buffer that corresponds to THREAD-TS."
+(defun agent-shell-to-go--find-buffer-for-thread (thread-ts &optional channel-id)
+  "Find the agent-shell buffer that corresponds to THREAD-TS.
+Optionally also match CHANNEL-ID if provided."
   (cl-find-if
    (lambda (buf)
      (and (buffer-live-p buf)
           (equal thread-ts
-                 (buffer-local-value 'agent-shell-to-go--thread-ts buf))))
+                 (buffer-local-value 'agent-shell-to-go--thread-ts buf))
+          (or (not channel-id)
+              (equal channel-id
+                     (buffer-local-value 'agent-shell-to-go--channel-id buf)))))
    agent-shell-to-go--active-buffers))
 
 (defun agent-shell-to-go--handle-websocket-message (frame)
@@ -301,16 +456,20 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
        (agent-shell-to-go--handle-message-event event))
       ("reaction_added"
        (agent-shell-to-go--debug "reaction event: %s" event)
-       (agent-shell-to-go--handle-reaction-event event)))))
+       (agent-shell-to-go--handle-reaction-event event))
+      ("reaction_removed"
+       (agent-shell-to-go--debug "reaction removed event: %s" event)
+       (agent-shell-to-go--handle-reaction-removed-event event)))))
 
 (defun agent-shell-to-go--handle-message-event (event)
   "Handle a message EVENT from Slack."
   (let* ((thread-ts (alist-get 'thread_ts event))
+         (channel (alist-get 'channel event))
          (user (alist-get 'user event))
          (text (alist-get 'text event))
          (subtype (alist-get 'subtype event))
          (bot-id (alist-get 'bot_id event))
-         (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts))))
+         (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
     ;; Only handle real user messages in threads we're tracking
     (when (and buffer
                text
@@ -323,12 +482,87 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
           (agent-shell-to-go--debug "received from Slack: %s" text)
           (agent-shell-to-go--inject-message text))))))
 
+(defun agent-shell-to-go--hidden-message-path (channel ts)
+  "Return the file path for storing hidden message content.
+CHANNEL is the Slack channel ID, TS is the message timestamp."
+  (expand-file-name (concat channel "/" ts ".txt")
+                    agent-shell-to-go-hidden-messages-dir))
+
+(defun agent-shell-to-go--get-message-text (channel ts)
+  "Get the text of message at TS in CHANNEL."
+  (let* ((response (agent-shell-to-go--api-request
+                    "GET"
+                    (format "conversations.history?channel=%s&latest=%s&limit=1&inclusive=true"
+                            channel ts)))
+         (messages (alist-get 'messages response))
+         (message (and messages (aref messages 0))))
+    (alist-get 'text message)))
+
+(defun agent-shell-to-go--save-hidden-message (channel ts text)
+  "Save TEXT of message at TS in CHANNEL to disk."
+  (let ((path (agent-shell-to-go--hidden-message-path channel ts)))
+    (make-directory (file-name-directory path) t)
+    (with-temp-file path
+      (insert text))))
+
+(defun agent-shell-to-go--load-hidden-message (channel ts)
+  "Load the original text of hidden message at TS in CHANNEL."
+  (let ((path (agent-shell-to-go--hidden-message-path channel ts)))
+    (when (file-exists-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (buffer-string)))))
+
+(defun agent-shell-to-go--delete-hidden-message-file (channel ts)
+  "Delete the stored hidden message file for TS in CHANNEL."
+  (let ((path (agent-shell-to-go--hidden-message-path channel ts)))
+    (when (file-exists-p path)
+      (delete-file path))))
+
+(defun agent-shell-to-go--hide-message (channel ts)
+  "Hide message at TS in CHANNEL by replacing with collapsed text."
+  ;; First fetch and save the original message
+  (let ((original-text (agent-shell-to-go--get-message-text channel ts)))
+    (when original-text
+      (agent-shell-to-go--save-hidden-message channel ts original-text)
+      (agent-shell-to-go--api-request
+       "POST" "chat.update"
+       `((channel . ,channel)
+         (ts . ,ts)
+         (text . ":see_no_evil: _message hidden_"))))))
+
+(defun agent-shell-to-go--unhide-message (channel ts)
+  "Restore hidden message at TS in CHANNEL to its original text."
+  (let ((original-text (agent-shell-to-go--load-hidden-message channel ts)))
+    (when original-text
+      (agent-shell-to-go--api-request
+       "POST" "chat.update"
+       `((channel . ,channel)
+         (ts . ,ts)
+         (text . ,original-text)))
+      (agent-shell-to-go--delete-hidden-message-file channel ts))))
+
+(defun agent-shell-to-go--handle-reaction-removed-event (event)
+  "Handle a reaction removed EVENT from Slack."
+  (let* ((item (alist-get 'item event))
+         (msg-ts (alist-get 'ts item))
+         (channel (alist-get 'channel item))
+         (reaction (alist-get 'reaction event)))
+    ;; Check if it was a hide reaction being removed
+    (when (member reaction agent-shell-to-go--hide-reactions)
+      (agent-shell-to-go--unhide-message channel msg-ts))))
+
 (defun agent-shell-to-go--handle-reaction-event (event)
   "Handle a reaction EVENT from Slack."
   (let* ((item (alist-get 'item event))
          (msg-ts (alist-get 'ts item))
+         (channel (alist-get 'channel item))
          (reaction (alist-get 'reaction event))
          (pending (assoc msg-ts agent-shell-to-go--pending-permissions)))
+    ;; Check for hide reactions first
+    (when (member reaction agent-shell-to-go--hide-reactions)
+      (agent-shell-to-go--hide-message channel msg-ts))
+    ;; Then check for permission reactions
     (when pending
       (let* ((info (cdr pending))
              (request-id (plist-get info :request-id))
@@ -665,6 +899,7 @@ ORIG-FN is the original function, ARGS are its arguments."
 (defun agent-shell-to-go--enable ()
   "Enable Slack mirroring for this buffer."
   (agent-shell-to-go--load-env)
+  (agent-shell-to-go--load-channels)
 
   (unless agent-shell-to-go-bot-token
     (error "agent-shell-to-go-bot-token not set. See agent-shell-to-go-env-file"))
@@ -672,6 +907,10 @@ ORIG-FN is the original function, ARGS are its arguments."
     (error "agent-shell-to-go-channel-id not set. See agent-shell-to-go-env-file"))
   (unless agent-shell-to-go-app-token
     (error "agent-shell-to-go-app-token not set. See agent-shell-to-go-env-file"))
+
+  ;; Get or create project-specific channel
+  (setq agent-shell-to-go--channel-id
+        (agent-shell-to-go--get-or-create-project-channel))
 
   ;; Start a new Slack thread for this session
   (setq agent-shell-to-go--thread-ts

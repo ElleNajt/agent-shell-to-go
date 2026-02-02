@@ -26,6 +26,8 @@ oauth_config:
       - chat:write
       - channels:history
       - channels:read
+      - channels:write
+      - groups:write
       - reactions:read
 
 settings:
@@ -33,6 +35,7 @@ settings:
     bot_events:
       - message.channels
       - reaction_added
+      - reaction_removed
   interactivity:
     is_enabled: false
   org_deploy_enabled: false

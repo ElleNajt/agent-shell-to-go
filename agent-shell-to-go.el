@@ -80,6 +80,16 @@ Override this if you have a custom agent-shell starter function."
   :type 'function
   :group 'agent-shell-to-go)
 
+(defcustom agent-shell-to-go-debug nil
+  "When non-nil, log debug messages to *Messages*."
+  :type 'boolean
+  :group 'agent-shell-to-go)
+
+(defun agent-shell-to-go--debug (format-string &rest args)
+  "Log a debug message if `agent-shell-to-go-debug' is non-nil."
+  (when agent-shell-to-go-debug
+    (apply #'message (concat "agent-shell-to-go: " format-string) args)))
+
 (defun agent-shell-to-go--load-env ()
   "Load credentials from .env file if not already set."
   (when (file-exists-p agent-shell-to-go-env-file)
@@ -259,29 +269,29 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (websocket-send-text agent-shell-to-go--websocket
                            (json-encode `((envelope_id . ,envelope-id)))))
     ;; Handle different event types
-    (message "agent-shell-to-go: websocket message type: %s" type)
+    (agent-shell-to-go--debug "websocket message type: %s" type)
     (pcase type
       ("events_api"
        (agent-shell-to-go--handle-event (alist-get 'payload data)))
       ("slash_commands"
-       (message "agent-shell-to-go: got slash_commands payload: %s" (alist-get 'payload data))
+       (agent-shell-to-go--debug "got slash_commands payload: %s" (alist-get 'payload data))
        (agent-shell-to-go--handle-slash-command (alist-get 'payload data)))
       ("hello"
-       (message "agent-shell-to-go: WebSocket connected"))
+       (agent-shell-to-go--debug "WebSocket connected"))
       ("disconnect"
-       (message "agent-shell-to-go: WebSocket disconnect requested, reconnecting...")
+       (agent-shell-to-go--debug "WebSocket disconnect requested, reconnecting...")
        (agent-shell-to-go--websocket-reconnect)))))
 
 (defun agent-shell-to-go--handle-event (payload)
   "Handle Slack event PAYLOAD."
   (let* ((event (alist-get 'event payload))
          (event-type (alist-get 'type event)))
-    (message "agent-shell-to-go: received event type: %s" event-type)
+    (agent-shell-to-go--debug "received event type: %s" event-type)
     (pcase event-type
       ("message"
        (agent-shell-to-go--handle-message-event event))
       ("reaction_added"
-       (message "agent-shell-to-go: reaction event: %s" event)
+       (agent-shell-to-go--debug "reaction event: %s" event)
        (agent-shell-to-go--handle-reaction-event event)))))
 
 (defun agent-shell-to-go--handle-message-event (event)
@@ -301,7 +311,7 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (with-current-buffer buffer
         (if (string-prefix-p "!" text)
             (agent-shell-to-go--handle-command text buffer thread-ts)
-          (message "agent-shell-to-go: received from Slack: %s" text)
+          (agent-shell-to-go--debug "received from Slack: %s" text)
           (agent-shell-to-go--inject-message text))))))
 
 (defun agent-shell-to-go--handle-reaction-event (event)
@@ -332,7 +342,7 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
 
 (defun agent-shell-to-go--start-agent-in-folder (folder &optional use-container)
   "Start a new agent in FOLDER. If USE-CONTAINER is non-nil, pass prefix arg."
-  (message "agent-shell-to-go: starting agent in %s (container: %s)" folder use-container)
+  (agent-shell-to-go--debug "starting agent in %s (container: %s)" folder use-container)
   (if (file-directory-p folder)
       (let ((default-directory folder))
         (save-window-excursion
@@ -348,8 +358,8 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
                            (if use-container " (container)" ""))
                    agent-shell-to-go--thread-ts)))
             (error
-             (message "agent-shell-to-go: error starting agent: %s" err)))))
-    (message "agent-shell-to-go: folder does not exist: %s" folder)))
+             (agent-shell-to-go--debug "error starting agent: %s" err)))))
+    (agent-shell-to-go--debug "folder does not exist: %s" folder)))
 
 (defun agent-shell-to-go--get-open-projects ()
   "Get list of open projects from Emacs.
@@ -379,7 +389,7 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                   (if (and text (not (string-empty-p text)))
                       text
                     agent-shell-to-go-default-folder))))
-    (message "agent-shell-to-go: slash command: %s %s" command text)
+    (agent-shell-to-go--debug "slash command: %s %s" command text)
     (pcase command
       ("/new-agent"
        (agent-shell-to-go--start-agent-in-folder folder nil))
@@ -421,11 +431,11 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                           :on-message (lambda (_ws frame)
                                         (agent-shell-to-go--handle-websocket-message frame))
                           :on-close (lambda (_ws)
-                                      (message "agent-shell-to-go: WebSocket closed")
+                                      (agent-shell-to-go--debug "WebSocket closed")
                                       (unless agent-shell-to-go--intentional-close
                                         (agent-shell-to-go--websocket-reconnect)))
                           :on-error (lambda (_ws _type err)
-                                      (message "agent-shell-to-go: WebSocket error: %s" err))))))
+                                      (agent-shell-to-go--debug "WebSocket error: %s" err))))))
 
 (defun agent-shell-to-go--websocket-reconnect ()
   "Schedule WebSocket reconnection."
@@ -661,7 +671,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
 
-  (message "agent-shell-to-go: mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
+  (agent-shell-to-go--debug "mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
 
 (defun agent-shell-to-go--disable ()
   "Disable Slack mirroring for this buffer."
@@ -680,7 +690,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
 
-  (message "agent-shell-to-go: mirroring disabled"))
+  (agent-shell-to-go--debug "mirroring disabled"))
 
 ;;;###autoload
 (define-minor-mode agent-shell-to-go-mode

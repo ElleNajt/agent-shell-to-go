@@ -395,27 +395,32 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
           ;; Initialize hash table if needed
           (unless agent-shell-to-go--uploaded-images
             (setq agent-shell-to-go--uploaded-images (make-hash-table :test 'equal)))
-          ;; Check if already uploaded
-          (unless (gethash file-path agent-shell-to-go--uploaded-images)
-            ;; Check rate limit
-            (if (not (agent-shell-to-go--check-upload-rate-limit))
-                (agent-shell-to-go--debug "rate limit exceeded, skipping: %s" file-path)
-              ;; Mark as uploaded
-              (puthash file-path t agent-shell-to-go--uploaded-images)
-              ;; Small delay to ensure file is fully written
-              (run-at-time 0.5 nil
-                           (lambda ()
-                             (when (and (buffer-live-p buffer)
-                                        (file-exists-p file-path))
-                               (with-current-buffer buffer
-                                 (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
-                                 (agent-shell-to-go--record-upload)
-                                 (agent-shell-to-go--upload-file
-                                  file-path
-                                  agent-shell-to-go--channel-id
-                                  agent-shell-to-go--thread-ts
-                                  (format ":frame_with_picture: `%s`"
-                                          (file-name-nondirectory file-path))))))))))))))
+          ;; Track by path + mtime to detect updates
+          (let* ((mtime (file-attribute-modification-time (file-attributes file-path)))
+                 (mtime-float (float-time mtime))
+                 (prev-mtime (gethash file-path agent-shell-to-go--uploaded-images)))
+            ;; Upload if new file or modified since last upload
+            (when (or (not prev-mtime)
+                      (> mtime-float prev-mtime))
+              ;; Check rate limit
+              (if (not (agent-shell-to-go--check-upload-rate-limit))
+                  (agent-shell-to-go--debug "rate limit exceeded, skipping: %s" file-path)
+                ;; Mark as uploaded with current mtime
+                (puthash file-path mtime-float agent-shell-to-go--uploaded-images)
+                ;; Small delay to ensure file is fully written
+                (run-at-time 0.5 nil
+                             (lambda ()
+                               (when (and (buffer-live-p buffer)
+                                          (file-exists-p file-path))
+                                 (with-current-buffer buffer
+                                   (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
+                                   (agent-shell-to-go--record-upload)
+                                   (agent-shell-to-go--upload-file
+                                    file-path
+                                    agent-shell-to-go--channel-id
+                                    agent-shell-to-go--thread-ts
+                                    (format ":frame_with_picture: `%s`"
+                                            (file-name-nondirectory file-path)))))))))))))))
 
 (defun agent-shell-to-go--start-file-watcher ()
   "Start fswatch for new image files in the project directory (recursive)."

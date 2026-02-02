@@ -1298,10 +1298,21 @@ ORIG-FN is the original function, ARGS are its arguments."
                     (file-path (alist-get 'file_path raw-input))
                     (query (alist-get 'query raw-input))  ; For WebSearch
                     (url (alist-get 'url raw-input))      ; For WebFetch
-                    ;; Prefer specific info over generic title
-                    (display (or command file-path query url))
-                    (generic-title (member title '("Write" "Terminal" "Read" "Edit" "Glob" "Grep"
-                                                   "WebSearch" "WebFetch" "Task" "Skill")))
+                    ;; Build display - title often already contains file path
+                    (specific-info (or command file-path query url))
+                    ;; Check if title already contains the specific info
+                    (title-has-info (and title specific-info
+                                         (string-match-p (regexp-quote specific-info) title)))
+                    (display (cond
+                              (command command)  ; Commands are self-explanatory
+                              ;; If title already has file path, just use title
+                              (title-has-info title)
+                              ;; Otherwise prefix with tool name
+                              ((and file-path title) (format "%s: %s" title file-path))
+                              ((and query title) (format "%s: %s" title query))
+                              ((and url title) (format "%s: %s" title url))
+                              (specific-info specific-info)
+                              (t title)))
                     ;; Extract diff if present
                     (diff (agent-shell-to-go--extract-diff update))
                     (diff-text (and diff
@@ -1311,8 +1322,8 @@ ORIG-FN is the original function, ARGS are its arguments."
                     (already-sent (and tool-call-id
                                        (with-current-buffer buffer
                                          (gethash tool-call-id agent-shell-to-go--tool-calls)))))
-               ;; Only send if we have meaningful display info and haven't sent yet
-               (when (and display (not already-sent))
+               ;; Only send if we have specific info (not just generic title) and haven't sent yet
+               (when (and specific-info (not already-sent))
                  (with-current-buffer buffer
                    (puthash tool-call-id t agent-shell-to-go--tool-calls))
                  (condition-case err

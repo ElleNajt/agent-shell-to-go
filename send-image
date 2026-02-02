@@ -1,0 +1,40 @@
+#!/bin/bash
+# Send an image to an agent-shell Slack thread
+# Usage: send-image <image-path> [comment] [buffer-name]
+#
+# If buffer-name is not specified:
+#   - Uses the agent-shell buffer visible in a window
+#   - Falls back to most recent active buffer
+#
+# Examples:
+#   send-image screenshot.png
+#   send-image screenshot.png "Look at this"
+#   send-image screenshot.png "" "Claude Code Agent @ myproject<2>"
+
+if [ -z "$1" ]; then
+    echo "Usage: send-image <image-path> [comment] [buffer-name]"
+    echo ""
+    echo "List active buffers:"
+    emacsclient -e '(mapcar #'\''buffer-name agent-shell-to-go--active-buffers)'
+    exit 1
+fi
+
+IMAGE_PATH="$1"
+COMMENT="${2:-}"
+BUFFER="${3:-}"
+
+if [ ! -f "$IMAGE_PATH" ]; then
+    echo "Error: File not found: $IMAGE_PATH"
+    exit 1
+fi
+
+# Escape the paths for elisp
+ESCAPED_PATH=$(printf '%s' "$IMAGE_PATH" | sed 's/"/\\"/g')
+ESCAPED_COMMENT=$(printf '%s' "$COMMENT" | sed 's/"/\\"/g')
+ESCAPED_BUFFER=$(printf '%s' "$BUFFER" | sed 's/"/\\"/g')
+
+if [ -n "$BUFFER" ]; then
+    emacsclient -e "(agent-shell-to-go-send-image \"$ESCAPED_PATH\" \"$ESCAPED_COMMENT\" (get-buffer \"$ESCAPED_BUFFER\"))"
+else
+    emacsclient -e "(agent-shell-to-go-send-image \"$ESCAPED_PATH\" \"$ESCAPED_COMMENT\")"
+fi

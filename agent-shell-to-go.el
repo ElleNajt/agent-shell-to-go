@@ -1654,5 +1654,55 @@ Take your AI agent sessions anywhere - chat from your phone!"
   "Set up automatic Slack mirroring for all agent-shell sessions."
   (add-hook 'agent-shell-mode-hook #'agent-shell-to-go-auto-enable))
 
+;;;###autoload
+(defun agent-shell-to-go-send-image (file-path &optional comment buffer)
+  "Send image at FILE-PATH to an agent-shell Slack thread.
+With optional COMMENT to display with the image.
+BUFFER specifies which agent-shell buffer to use (defaults to current or most recent).
+This is useful for sending images that are outside the project directory."
+  (interactive
+   (let* ((file (read-file-name "Image file: " nil nil t nil
+                                (lambda (f) (or (file-directory-p f)
+                                                (agent-shell-to-go--image-file-p f)))))
+          (cmt (read-string "Comment (optional): "))
+          ;; If multiple buffers, ask which one
+          (buf (if (and (not (derived-mode-p 'agent-shell-mode))
+                        (> (length agent-shell-to-go--active-buffers) 1))
+                   (get-buffer
+                    (completing-read "Send to buffer: "
+                                     (mapcar #'buffer-name agent-shell-to-go--active-buffers)
+                                     nil t))
+                 nil)))
+     (list file cmt buf)))
+  (let ((buffer (or buffer
+                    (and (derived-mode-p 'agent-shell-mode)
+                         (buffer-local-value 'agent-shell-to-go-mode (current-buffer))
+                         (current-buffer))
+                    ;; Find most recent buffer by checking if current window has one
+                    (cl-find-if (lambda (b)
+                                  (and (buffer-live-p b)
+                                       (get-buffer-window b)))
+                                agent-shell-to-go--active-buffers)
+                    (car agent-shell-to-go--active-buffers))))
+    (unless buffer
+      (user-error "No active agent-shell-to-go session"))
+    (unless (file-exists-p file-path)
+      (user-error "File does not exist: %s" file-path))
+    (unless (agent-shell-to-go--image-file-p file-path)
+      (user-error "Not an image file: %s" file-path))
+    (with-current-buffer buffer
+      (unless agent-shell-to-go--thread-ts
+        (user-error "No Slack thread for this session"))
+      (let ((comment-text (if (and comment (not (string-empty-p comment)))
+                              comment
+                            (format ":frame_with_picture: `%s`"
+                                    (file-name-nondirectory file-path)))))
+        (agent-shell-to-go--upload-file
+         (expand-file-name file-path)
+         agent-shell-to-go--channel-id
+         agent-shell-to-go--thread-ts
+         comment-text)
+        (message "Sent image to Slack: %s" (file-name-nondirectory file-path))))))
+
 (provide 'agent-shell-to-go)
 ;;; agent-shell-to-go.el ends here

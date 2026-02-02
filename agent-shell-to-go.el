@@ -329,16 +329,18 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
         (kill-buffer)
         response))))
 
-(defun agent-shell-to-go--send (text &optional thread-ts channel-id)
+(defun agent-shell-to-go--send (text &optional thread-ts channel-id truncate)
   "Send TEXT to Slack, optionally in THREAD-TS thread.
 CHANNEL-ID overrides the buffer-local or default channel.
-If TEXT is truncated, stores the full text for later expansion via 👀."
+If TRUNCATE is non-nil, truncate long messages and store full text for 👀 expansion."
   (let* ((channel (or channel-id
                       agent-shell-to-go--channel-id
                       agent-shell-to-go-channel-id))
          (clean-text (agent-shell-to-go--strip-non-ascii text))
-         (truncated-text (agent-shell-to-go--truncate-message clean-text 500))
-         (was-truncated (not (equal clean-text truncated-text)))
+         (truncated-text (if truncate
+                             (agent-shell-to-go--truncate-message clean-text 500)
+                           clean-text))
+         (was-truncated (and truncate (not (equal clean-text truncated-text))))
          (data `((channel . ,channel)
                  (text . ,truncated-text))))
     (when thread-ts
@@ -864,7 +866,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                (when display
                  (agent-shell-to-go--send
                   (format ":hourglass: `%s`" display)
-                  thread-ts))))
+                  thread-ts nil t))))  ; truncate=t
             ("tool_call_update"
              ;; Tool call completed - show output
              (let* ((status (alist-get 'status update))
@@ -875,8 +877,8 @@ ORIG-FN is the original function, ARGS are its arguments."
                   (format "%s\n```\n%s\n```"
                           (if (equal status "completed") ":white_check_mark:" ":x:")
                           output)
-                  thread-ts))))))))
-    (apply orig-fn args)))
+                  thread-ts nil t)))))))))  ; truncate=t
+  (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
   "Advice for agent-shell-heartbeat-stop. Flush agent message to Slack.

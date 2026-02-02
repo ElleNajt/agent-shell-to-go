@@ -275,6 +275,11 @@ Returns the channel ID."
 Maps file path to timestamp when it was mentioned.
 Used to filter image uploads to only files the agent touched.")
 
+(defvar-local agent-shell-to-go--tool-calls nil
+  "Hash table tracking tool calls by toolCallId.
+Stores the best display info we've seen so far for each tool call,
+so we only send to Slack when we have meaningful info.")
+
 (defcustom agent-shell-to-go-image-upload-rate-limit 30
   "Maximum number of images to upload per minute.
 Set to nil to disable rate limiting."
@@ -1282,20 +1287,34 @@ ORIG-FN is the original function, ARGS are its arguments."
                  (setq agent-shell-to-go--current-agent-message nil))
                ;; Record any file paths mentioned for image upload filtering
                (dolist (path (agent-shell-to-go--extract-file-paths-from-update update))
-                 (agent-shell-to-go--record-mentioned-file path)))
-             (let* ((title (alist-get 'title update))
+                 (agent-shell-to-go--record-mentioned-file path))
+               ;; Initialize tool-calls hash if needed
+               (unless agent-shell-to-go--tool-calls
+                 (setq agent-shell-to-go--tool-calls (make-hash-table :test 'equal))))
+             (let* ((tool-call-id (alist-get 'toolCallId update))
+                    (title (alist-get 'title update))
                     (raw-input (alist-get 'rawInput update))
                     (command (alist-get 'command raw-input))
                     (file-path (alist-get 'file_path raw-input))
-                    (display (or command
-                                 file-path
-                                 title))
+                    (query (alist-get 'query raw-input))  ; For WebSearch
+                    (url (alist-get 'url raw-input))      ; For WebFetch
+                    ;; Prefer specific info over generic title
+                    (display (or command file-path query url))
+                    (generic-title (member title '("Write" "Terminal" "Read" "Edit" "Glob" "Grep"
+                                                   "WebSearch" "WebFetch" "Task" "Skill")))
                     ;; Extract diff if present
                     (diff (agent-shell-to-go--extract-diff update))
                     (diff-text (and diff
                                     (agent-shell-to-go--format-diff-for-slack
-                                     (car diff) (cdr diff)))))
-               (when display
+                                     (car diff) (cdr diff))))
+                    ;; Check if we already sent for this tool call
+                    (already-sent (and tool-call-id
+                                       (with-current-buffer buffer
+                                         (gethash tool-call-id agent-shell-to-go--tool-calls)))))
+               ;; Only send if we have meaningful display info and haven't sent yet
+               (when (and display (not already-sent))
+                 (with-current-buffer buffer
+                   (puthash tool-call-id t agent-shell-to-go--tool-calls))
                  (condition-case err
                      (if (and diff-text (> (length diff-text) 0))
                          ;; Show file path with diff
@@ -1310,7 +1329,10 @@ ORIG-FN is the original function, ARGS are its arguments."
                     (agent-shell-to-go--debug "tool_call error: %s" err)
                     (agent-shell-to-go--send
                      (format ":hourglass: `%s`" display)
-                     thread-ts nil t))))))  ; truncate=t
+                     thread-ts nil t))))
+               ;; If we only have generic title and haven't sent, don't send yet
+               ;; (wait for update with more info)
+               ))  ; truncate=t
             ("tool_call_update"
              ;; Tool call completed - show output and/or diff
              ;; Record any file paths mentioned for image upload filtering

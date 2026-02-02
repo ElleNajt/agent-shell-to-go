@@ -65,6 +65,12 @@ You can now chat with Claude (or any agent) from your phone while away from your
 (setq agent-shell-to-go-channel-id "C...")
 ```
 
+## TODO
+
+- [ ] Use Slack Socket Mode (websockets) instead of polling for lower latency
+- [ ] Send notifications when Claude asks a question or needs input
+- [ ] Change modes via slack 
+
 ## License
 
 GPL-3.0

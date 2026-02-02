@@ -103,6 +103,19 @@
 (defvar-local agent-shell-to-go--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
+(defvar agent-shell-to-go--pending-permissions nil
+  "Alist of pending permission requests.
+Each entry: (slack-msg-ts . (:request-id id :state state :buffer buffer :options options))")
+
+(defconst agent-shell-to-go--reaction-map
+  '(("white_check_mark" . allow)
+    ("+1" . allow)
+    ("unlock" . always)
+    ("star" . always)
+    ("x" . reject)
+    ("-1" . reject))
+  "Map Slack reaction names to permission actions.")
+
 ;;; Slack API
 
 (defun agent-shell-to-go--api-request (method endpoint &optional data)
@@ -129,6 +142,14 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (push `(thread_ts . ,thread-ts) data))
     (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
 
+(defun agent-shell-to-go--update-message (msg-ts text)
+  "Update message MSG-TS with new TEXT."
+  (agent-shell-to-go--api-request
+   "POST" "chat.update"
+   `((channel . ,agent-shell-to-go-channel-id)
+     (ts . ,msg-ts)
+     (text . ,text))))
+
 (defun agent-shell-to-go--get-thread-replies (thread-ts &optional oldest)
   "Get replies in THREAD-TS, optionally newer than OLDEST."
   (let* ((params (format "channel=%s&ts=%s" agent-shell-to-go-channel-id thread-ts))
@@ -137,6 +158,18 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
                     "GET"
                     (concat "conversations.replies?" params))))
     (alist-get 'messages response)))
+
+(defun agent-shell-to-go--get-reactions (msg-ts)
+  "Get reactions on message MSG-TS."
+  (let* ((response (agent-shell-to-go--api-request
+                    "GET"
+                    (format "reactions.get?channel=%s&timestamp=%s"
+                            agent-shell-to-go-channel-id msg-ts)))
+         (message (alist-get 'message response))
+         (reactions (alist-get 'reactions message)))
+    ;; reactions is a vector of ((name . "x") (users . [...]) (count . N))
+    (when reactions
+      (append reactions nil))))
 
 (defun agent-shell-to-go--get-bot-user-id ()
   "Get the bot's user ID."
@@ -183,6 +216,47 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
     (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200))))
 
 ;;; Advice functions to hook into agent-shell
+
+(defun agent-shell-to-go--on-request (orig-fn &rest args)
+  "Advice for agent-shell--on-request. Notify on permission requests.
+ORIG-FN is the original function, ARGS are its arguments."
+  ;; args is a plist like (:state STATE :request REQUEST)
+  (let* ((state (plist-get args :state))
+         (request (plist-get args :request))
+         (method (alist-get 'method request))
+         (buffer (and state (alist-get :buffer state))))
+    (when (and buffer
+               (buffer-live-p buffer)
+               (equal method "session/request_permission"))
+      ;; Check for either new or old mode, get thread-ts from whichever is active
+      (let* ((thread-ts (or (buffer-local-value 'agent-shell-to-go--thread-ts buffer)
+                            (and (boundp 'agent-shell-slack--thread-ts)
+                                 (buffer-local-value 'agent-shell-slack--thread-ts buffer))))
+             (request-id (alist-get 'id request))
+             (params (alist-get 'params request))
+             (options (alist-get 'options params))
+             (tool-call (alist-get 'toolCall params))
+             (title (alist-get 'title tool-call))
+             (raw-input (alist-get 'rawInput tool-call))
+             (command (and raw-input (alist-get 'command raw-input))))
+        (when thread-ts
+          (condition-case err
+              (let* ((response (agent-shell-to-go--send
+                                (format ":warning: *Permission Required*\n`%s`\n\nReact: :white_check_mark: Allow | :unlock: Always | :x: Reject"
+                                        (or command title "Unknown action"))
+                                thread-ts))
+                     (msg-ts (alist-get 'ts response)))
+                ;; Store pending permission for reaction polling
+                ;; Only store what we need - not the whole state object
+                (when msg-ts
+                  (push (cons msg-ts
+                              (list :request-id request-id
+                                    :buffer buffer
+                                    :options options
+                                    :command (or command title "Unknown")))
+                        agent-shell-to-go--pending-permissions)))
+            (error (message "agent-shell-to-go permission notify error: %s" err)))))))
+  (apply orig-fn args))
 
 (defun agent-shell-to-go--on-send-command (orig-fn &rest args)
   "Advice for agent-shell--send-command. Send user prompt to Slack.
@@ -249,8 +323,58 @@ ORIG-FN is the original function, ARGS are its arguments."
   "Return t if TS1 is newer than TS2 (Slack timestamps are decimal strings)."
   (> (string-to-number ts1) (string-to-number ts2)))
 
+(defun agent-shell-to-go--find-option-id (options action)
+  "Find option ID in OPTIONS matching ACTION (allow, always, reject)."
+  (let ((options-list (append options nil)))
+    (cl-loop for opt in options-list
+             for id = (or (alist-get 'optionId opt) (alist-get 'id opt))
+             for kind = (alist-get 'kind opt)
+             when (pcase action
+                    ('allow (member kind '("allow" "accept" "allow_once")))
+                    ('always (member kind '("always" "alwaysAllow" "allow_always")))
+                    ('reject (member kind '("deny" "reject" "reject_once"))))
+             return id)))
+
+(defun agent-shell-to-go--check-permission-reactions ()
+  "Check for reactions on pending permission messages and respond."
+  (let ((still-pending nil))
+    (dolist (pending agent-shell-to-go--pending-permissions)
+      (let* ((msg-ts (car pending))
+             (info (cdr pending))
+             (request-id (plist-get info :request-id))
+             (buffer (plist-get info :buffer))
+             (options (plist-get info :options))
+             (handled nil))
+        (condition-case err
+            (when (and buffer (buffer-live-p buffer))
+              (let ((reactions (agent-shell-to-go--get-reactions msg-ts)))
+                (cl-loop for reaction in reactions
+                         for name = (let ((n (alist-get 'name reaction)))
+                                      (if (symbolp n) (symbol-name n) n))
+                         for action = (alist-get name agent-shell-to-go--reaction-map
+                                                 nil nil #'string=)
+                         when action do
+                         (let ((option-id (agent-shell-to-go--find-option-id options action)))
+                           (when option-id
+                             (with-current-buffer buffer
+                               ;; Get state and client from buffer-local variable
+                               (let ((state agent-shell--state))
+                                 (agent-shell--send-permission-response
+                                  :client (alist-get :client state)
+                                  :request-id request-id
+                                  :option-id option-id
+                                  :state state)))
+                             (setq handled t))))))
+          (error (message "agent-shell-to-go reaction check error: %s" err)))
+        (unless handled
+          (push pending still-pending))))
+    (setq agent-shell-to-go--pending-permissions (nreverse still-pending))))
+
 (defun agent-shell-to-go--check-for-replies ()
   "Check all active Slack threads for new replies and inject into agent-shell."
+  ;; Also check for permission reactions
+  (when agent-shell-to-go--pending-permissions
+    (agent-shell-to-go--check-permission-reactions))
   (dolist (buffer agent-shell-to-go--active-buffers)
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
@@ -270,11 +394,50 @@ ORIG-FN is the original function, ARGS are its arguments."
                                (not (equal user bot-user-id))
                                (or (null agent-shell-to-go--last-seen-ts)
                                    (agent-shell-to-go--ts> ts agent-shell-to-go--last-seen-ts)))
-                      ;; Inject into agent-shell
-                      (message "agent-shell-to-go: received from Slack: %s" text)
-                      (agent-shell-to-go--inject-message text)
-                      (setq agent-shell-to-go--last-seen-ts ts)))))
+                      (setq agent-shell-to-go--last-seen-ts ts)
+                      ;; Check for commands first
+                      (if (string-prefix-p "!" text)
+                          (agent-shell-to-go--handle-command
+                           text (current-buffer) agent-shell-to-go--thread-ts)
+                        ;; Regular message - inject into agent-shell
+                        (message "agent-shell-to-go: received from Slack: %s" text)
+                        (agent-shell-to-go--inject-message text))))))
             (error (message "agent-shell-to-go poll error: %s" err))))))))
+
+(defun agent-shell-to-go--handle-command (text buffer thread-ts)
+  "Handle command TEXT in BUFFER, reply to THREAD-TS."
+  (let ((cmd (downcase (string-trim text))))
+    (pcase cmd
+      ((or "!yolo" "!bypass")
+       (with-current-buffer buffer
+         (agent-shell-set-session-mode "bypassPermissions"))
+       (agent-shell-to-go--send ":zap: Mode: *Bypass Permissions*" thread-ts)
+       t)
+      ((or "!safe" "!accept" "!acceptedits")
+       (with-current-buffer buffer
+         (agent-shell-set-session-mode "acceptEdits"))
+       (agent-shell-to-go--send ":shield: Mode: *Accept Edits*" thread-ts)
+       t)
+      ((or "!plan" "!planmode")
+       (with-current-buffer buffer
+         (agent-shell-set-session-mode "plan"))
+       (agent-shell-to-go--send ":clipboard: Mode: *Plan*" thread-ts)
+       t)
+      ("!mode"
+       (with-current-buffer buffer
+         (let ((mode-id (map-nested-elt agent-shell--state '(:session :mode-id))))
+           (agent-shell-to-go--send (format ":gear: Current mode: *%s*" (or mode-id "unknown")) thread-ts)))
+       t)
+      ("!help"
+       (agent-shell-to-go--send
+        (concat ":question: *Commands:*\n"
+                "`!yolo` - Bypass permissions\n"
+                "`!safe` - Accept edits mode\n"
+                "`!plan` - Plan mode\n"
+                "`!mode` - Show current mode")
+        thread-ts)
+       t)
+      (_ nil)))) ; Return nil if not a recognized command
 
 (defun agent-shell-to-go--inject-message (text)
   "Inject TEXT from Slack into the current agent-shell buffer."
@@ -326,6 +489,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   ;; Add advice
   (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
+  (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
 
   (message "agent-shell-to-go: mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
@@ -347,6 +511,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (unless agent-shell-to-go--active-buffers
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
+    (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
 
   (message "agent-shell-to-go: mirroring disabled"))

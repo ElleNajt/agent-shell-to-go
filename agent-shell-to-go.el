@@ -270,6 +270,11 @@ Returns the channel ID."
 (defvar-local agent-shell-to-go--upload-timestamps nil
   "List of recent upload timestamps for rate limiting.")
 
+(defvar-local agent-shell-to-go--mentioned-files nil
+  "Hash table of file paths mentioned in recent tool calls.
+Maps file path to timestamp when it was mentioned.
+Used to filter image uploads to only files the agent touched.")
+
 (defcustom agent-shell-to-go-image-upload-rate-limit 30
   "Maximum number of images to upload per minute.
 Set to nil to disable rate limiting."
@@ -384,43 +389,85 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
   "Record an upload timestamp for rate limiting."
   (push (float-time) agent-shell-to-go--upload-timestamps))
 
+(defcustom agent-shell-to-go-mentioned-file-ttl 300
+  "Time in seconds to remember mentioned files for image upload filtering.
+Files mentioned in tool calls are eligible for upload for this long."
+  :type 'integer
+  :group 'agent-shell-to-go)
+
+(defun agent-shell-to-go--record-mentioned-file (file-path)
+  "Record FILE-PATH as mentioned by the agent."
+  (unless agent-shell-to-go--mentioned-files
+    (setq agent-shell-to-go--mentioned-files (make-hash-table :test 'equal)))
+  (puthash file-path (float-time) agent-shell-to-go--mentioned-files))
+
+(defun agent-shell-to-go--file-was-mentioned-p (file-path)
+  "Return non-nil if FILE-PATH was recently mentioned by the agent."
+  (when agent-shell-to-go--mentioned-files
+    (let ((mentioned-time (gethash file-path agent-shell-to-go--mentioned-files)))
+      (and mentioned-time
+           (< (- (float-time) mentioned-time) agent-shell-to-go-mentioned-file-ttl)))))
+
+(defun agent-shell-to-go--extract-file-paths-from-update (update)
+  "Extract file paths mentioned in tool call UPDATE."
+  (let ((paths nil)
+        (raw-input (alist-get 'rawInput update))
+        (content (alist-get 'content update)))
+    ;; Check rawInput for file_path
+    (when-let ((fp (alist-get 'file_path raw-input)))
+      (push fp paths))
+    ;; Check rawInput for path
+    (when-let ((p (alist-get 'path raw-input)))
+      (push p paths))
+    ;; Check content for paths (in diff items)
+    (when content
+      (let ((content-list (if (vectorp content) (append content nil)
+                            (if (listp content) content nil))))
+        (dolist (item content-list)
+          (when-let ((p (alist-get 'path item)))
+            (push p paths)))))
+    paths))
+
 (defun agent-shell-to-go--handle-fswatch-output (buffer output)
-  "Handle fswatch OUTPUT, uploading new images for BUFFER."
+  "Handle fswatch OUTPUT, uploading new images for BUFFER.
+Only uploads images that were recently mentioned by this buffer's agent."
   (when (buffer-live-p buffer)
     (dolist (file-path (split-string output "\n" t))
       (when (and (agent-shell-to-go--image-file-p file-path)
                  (file-exists-p file-path)
                  (> (file-attribute-size (file-attributes file-path)) 0))
         (with-current-buffer buffer
-          ;; Initialize hash table if needed
-          (unless agent-shell-to-go--uploaded-images
-            (setq agent-shell-to-go--uploaded-images (make-hash-table :test 'equal)))
-          ;; Track by path + mtime to detect updates
-          (let* ((mtime (file-attribute-modification-time (file-attributes file-path)))
-                 (mtime-float (float-time mtime))
-                 (prev-mtime (gethash file-path agent-shell-to-go--uploaded-images)))
-            ;; Upload if new file or modified since last upload
-            (when (or (not prev-mtime)
-                      (> mtime-float prev-mtime))
-              ;; Check rate limit
-              (if (not (agent-shell-to-go--check-upload-rate-limit))
-                  (agent-shell-to-go--debug "rate limit exceeded, skipping: %s" file-path)
-                ;; Mark as uploaded with current mtime
-                (puthash file-path mtime-float agent-shell-to-go--uploaded-images)
-                ;; Small delay to ensure file is fully written
-                (run-at-time 0.5 nil
-                             (lambda ()
-                               (when (and (buffer-live-p buffer)
-                                          (file-exists-p file-path))
-                                 (with-current-buffer buffer
-                                   (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
-                                   (agent-shell-to-go--record-upload)
-                                   (agent-shell-to-go--upload-file
-                                    file-path
-                                    agent-shell-to-go--channel-id
-                                    agent-shell-to-go--thread-ts
-                                    (format ":frame_with_picture: `%s`"
-                                            (file-name-nondirectory file-path)))))))))))))))
+          ;; Only upload if this file was mentioned by this buffer's agent
+          (when (agent-shell-to-go--file-was-mentioned-p file-path)
+            ;; Initialize hash table if needed
+            (unless agent-shell-to-go--uploaded-images
+              (setq agent-shell-to-go--uploaded-images (make-hash-table :test 'equal)))
+            ;; Track by path + mtime to detect updates
+            (let* ((mtime (file-attribute-modification-time (file-attributes file-path)))
+                   (mtime-float (float-time mtime))
+                   (prev-mtime (gethash file-path agent-shell-to-go--uploaded-images)))
+              ;; Upload if new file or modified since last upload
+              (when (or (not prev-mtime)
+                        (> mtime-float prev-mtime))
+                ;; Check rate limit
+                (if (not (agent-shell-to-go--check-upload-rate-limit))
+                    (agent-shell-to-go--debug "rate limit exceeded, skipping: %s" file-path)
+                  ;; Mark as uploaded with current mtime
+                  (puthash file-path mtime-float agent-shell-to-go--uploaded-images)
+                  ;; Small delay to ensure file is fully written
+                  (run-at-time 0.5 nil
+                               (lambda ()
+                                 (when (and (buffer-live-p buffer)
+                                            (file-exists-p file-path))
+                                   (with-current-buffer buffer
+                                     (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
+                                     (agent-shell-to-go--record-upload)
+                                     (agent-shell-to-go--upload-file
+                                      file-path
+                                      agent-shell-to-go--channel-id
+                                      agent-shell-to-go--thread-ts
+                                      (format ":frame_with_picture: `%s`"
+                                              (file-name-nondirectory file-path))))))))))))))))
 
 (defun agent-shell-to-go--start-file-watcher ()
   "Start fswatch for new image files in the project directory (recursive)."
@@ -1231,7 +1278,10 @@ ORIG-FN is the original function, ARGS are its arguments."
                  (agent-shell-to-go--send
                   (agent-shell-to-go--format-agent-message agent-shell-to-go--current-agent-message)
                   thread-ts)
-                 (setq agent-shell-to-go--current-agent-message nil)))
+                 (setq agent-shell-to-go--current-agent-message nil))
+               ;; Record any file paths mentioned for image upload filtering
+               (dolist (path (agent-shell-to-go--extract-file-paths-from-update update))
+                 (agent-shell-to-go--record-mentioned-file path)))
              (let* ((title (alist-get 'title update))
                     (raw-input (alist-get 'rawInput update))
                     (command (alist-get 'command raw-input))
@@ -1262,6 +1312,10 @@ ORIG-FN is the original function, ARGS are its arguments."
                      thread-ts nil t))))))  ; truncate=t
             ("tool_call_update"
              ;; Tool call completed - show output and/or diff
+             ;; Record any file paths mentioned for image upload filtering
+             (with-current-buffer buffer
+               (dolist (path (agent-shell-to-go--extract-file-paths-from-update update))
+                 (agent-shell-to-go--record-mentioned-file path)))
              (let* ((status (alist-get 'status update))
                     (content (alist-get 'content update))
                     ;; Extract text from content array - try both structures

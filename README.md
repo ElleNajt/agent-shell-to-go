@@ -13,6 +13,15 @@ Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhe
 - Slash commands to start new agents from Slack (`/new-agent`, `/projects`)
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
+## Security Warning
+
+**Anyone with access to your Slack channel can control your agent-shell sessions.** This includes:
+- Sending prompts to Claude Code running on your machine
+- Approving permission requests (file edits, command execution, etc.)
+- Starting new agent sessions via slash commands
+
+This is powerful but risky. Be mindful of who has access to your Slack channel. Consider using a private channel with restricted membership.
+
 ## Setup
 
 ### 1. Create a Slack App

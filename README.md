@@ -26,7 +26,24 @@ This is powerful but risky. Be mindful of who has access to your Slack channel. 
 
 ### 1. Create a Slack App
 
-#### Step-by-step guide
+#### Quick setup (recommended)
+
+1. Go to https://api.slack.com/apps
+2. Click "Create New App" → "From an app manifest"
+3. Select your workspace
+4. Paste the contents of [`slack-app-manifest.yaml`](./slack-app-manifest.yaml)
+5. Click "Create"
+6. Go to "OAuth & Permissions" → "Install to Workspace" → copy the Bot Token (`xoxb-...`)
+7. Go to "Basic Information" → "App-Level Tokens" → "Generate Token" with `connections:write` scope → copy it (`xapp-...`)
+8. Get your channel ID (right-click channel → "View channel details" → scroll to bottom)
+9. Invite the bot to your channel: `/invite @agent-shell-to-go`
+
+Skip to [Configure credentials](#2-configure-credentials).
+
+#### Manual setup
+
+<details>
+<summary>Click to expand step-by-step guide</summary>
 
 1. **Create the app**
    - Go to https://api.slack.com/apps
@@ -80,6 +97,8 @@ This is powerful but risky. Be mindful of who has access to your Slack channel. 
    - Get the channel ID:
      - Right-click the channel name → "View channel details"
      - Scroll to the bottom and copy the Channel ID (starts with `C`)
+
+</details>
 
 ### 2. Configure credentials
 

@@ -1,0 +1,40 @@
+display_information:
+  name: agent-shell-to-go
+  description: Mirror agent-shell sessions to Slack. Chat with your AI agents from anywhere.
+  background_color: "#7C3AED"
+
+features:
+  bot_user:
+    display_name: agent-shell-to-go
+    always_online: false
+  slash_commands:
+    - command: /new-agent
+      description: Start new agent in a folder
+      usage_hint: "[folder path]"
+      should_escape: false
+    - command: /new-agent-container
+      description: Start new agent in a container
+      usage_hint: "[folder path]"
+      should_escape: false
+    - command: /projects
+      description: List open projects from Emacs
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:history
+      - channels:read
+      - reactions:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - reaction_added
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

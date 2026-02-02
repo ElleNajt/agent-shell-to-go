@@ -777,26 +777,50 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
   '("png" "jpg" "jpeg" "gif" "webp" "bmp" "svg")
   "File extensions recognized as images for upload to Slack.")
 
+(defun agent-shell-to-go--parse-unified-diff (diff-string)
+  "Parse unified DIFF-STRING into old and new text.
+Returns a cons cell (OLD-TEXT . NEW-TEXT)."
+  (let (old-lines new-lines in-hunk)
+    (dolist (line (split-string diff-string "\n"))
+      (cond
+       ((string-match "^@@.*@@" line)
+        (setq in-hunk t))
+       ((and in-hunk (string-prefix-p " " line))
+        (push (substring line 1) old-lines)
+        (push (substring line 1) new-lines))
+       ((and in-hunk (string-prefix-p "-" line))
+        (push (substring line 1) old-lines))
+       ((and in-hunk (string-prefix-p "+" line))
+        (push (substring line 1) new-lines))))
+    (cons (string-join (nreverse old-lines) "\n")
+          (string-join (nreverse new-lines) "\n"))))
+
 (defun agent-shell-to-go--extract-diff (update)
   "Extract diff info from tool call UPDATE.
 Returns (old-text . new-text) or nil if no diff found."
   (let* ((content (alist-get 'content update))
          (raw-input (alist-get 'rawInput update))
-         ;; Try content with type=diff
-         (diff-content (and content
-                            (equal (alist-get 'type content) "diff")
-                            content))
-         ;; Try rawInput with old_str/new_str (Copilot style)
-         (raw-diff (and raw-input
-                        (alist-get 'new_str raw-input)
-                        raw-input)))
+         ;; Normalize content to a list for searching
+         (content-list (cond
+                        ((vectorp content) (append content nil))
+                        ((and content (listp content) (not (alist-get 'type content))) content)
+                        (content (list content))  ; Single item, wrap in list
+                        (t nil))))
     (cond
-     (diff-content
-      (cons (or (alist-get 'oldText diff-content) "")
-            (alist-get 'newText diff-content)))
-     (raw-diff
-      (cons (or (alist-get 'old_str raw-diff) "")
-            (alist-get 'new_str raw-diff))))))
+     ;; Search content list for diff item
+     ((and content-list
+           (seq-find (lambda (item) (equal (alist-get 'type item) "diff")) content-list))
+      (let ((diff-item (seq-find (lambda (item) (equal (alist-get 'type item) "diff")) content-list)))
+        (cons (or (alist-get 'oldText diff-item) "")
+              (alist-get 'newText diff-item))))
+     ;; rawInput with new_str/old_str (for Edit tool)
+     ((and raw-input (alist-get 'new_str raw-input))
+      (cons (or (alist-get 'old_str raw-input) "")
+            (alist-get 'new_str raw-input)))
+     ;; rawInput with diff string (Copilot style)
+     ((and raw-input (alist-get 'diff raw-input))
+      (let ((diff-str (alist-get 'diff raw-input)))
+        (agent-shell-to-go--parse-unified-diff diff-str))))))
 
 (defun agent-shell-to-go--format-diff-for-slack (old-text new-text)
   "Format a diff between OLD-TEXT and NEW-TEXT for Slack."
@@ -1217,26 +1241,69 @@ ORIG-FN is the original function, ARGS are its arguments."
                                     (agent-shell-to-go--format-diff-for-slack
                                      (car diff) (cdr diff)))))
                (when display
-                 (if (and diff-text (> (length diff-text) 0))
-                     ;; Show file path with diff
-                     (agent-shell-to-go--send
-                      (format ":hourglass: `%s`\n```diff\n%s\n```" display diff-text)
-                      thread-ts nil t)
-                   ;; No diff, just show command/title
-                   (agent-shell-to-go--send
-                    (format ":hourglass: `%s`" display)
-                    thread-ts nil t)))))  ; truncate=t
+                 (condition-case err
+                     (if (and diff-text (> (length diff-text) 0))
+                         ;; Show file path with diff
+                         (agent-shell-to-go--send
+                          (format ":hourglass: `%s`\n```diff\n%s\n```" display diff-text)
+                          thread-ts nil t)
+                       ;; No diff, just show command/title
+                       (agent-shell-to-go--send
+                        (format ":hourglass: `%s`" display)
+                        thread-ts nil t))
+                   (error
+                    (agent-shell-to-go--debug "tool_call error: %s" err)
+                    (agent-shell-to-go--send
+                     (format ":hourglass: `%s`" display)
+                     thread-ts nil t))))))  ; truncate=t
             ("tool_call_update"
-             ;; Tool call completed - show output
+             ;; Tool call completed - show output and/or diff
              (let* ((status (alist-get 'status update))
+                    (content (alist-get 'content update))
+                    ;; Extract text from content array - try both structures
+                    (content-text (and content
+                                       (mapconcat
+                                        (lambda (item)
+                                          ;; Try nested .content.text first, then direct .text
+                                          (or (alist-get 'text (alist-get 'content item))
+                                              (alist-get 'text item)
+                                              ""))
+                                        (if (vectorp content) (append content nil) 
+                                          (if (listp content) content nil))
+                                        "\n")))
                     (output (or (alist-get 'rawOutput update)
-                                (alist-get 'output update))))
-               (when (and (member status '("completed" "failed")) output)
-                 (agent-shell-to-go--send
-                  (format "%s\n```\n%s\n```"
-                          (if (equal status "completed") ":white_check_mark:" ":x:")
-                          output)
-                  thread-ts nil t)))))))))  ; truncate=t
+                                (alist-get 'output update)
+                                content-text))
+                    ;; Try to extract diff
+                    (diff (condition-case nil
+                              (agent-shell-to-go--extract-diff update)
+                            (error nil)))
+                    (diff-text (and diff
+                                    (condition-case nil
+                                        (agent-shell-to-go--format-diff-for-slack
+                                         (car diff) (cdr diff))
+                                      (error nil)))))
+               (when (member status '("completed" "failed"))
+                 (cond
+                  ;; Has diff - show diff
+                  ((and diff-text (> (length diff-text) 0))
+                   (agent-shell-to-go--send
+                    (format "%s\n```diff\n%s\n```"
+                            (if (equal status "completed") ":white_check_mark:" ":x:")
+                            diff-text)
+                    thread-ts nil t))
+                  ;; Has output - show output
+                  ((and output (stringp output) (> (length output) 0))
+                   (agent-shell-to-go--send
+                    (format "%s\n```\n%s\n```"
+                            (if (equal status "completed") ":white_check_mark:" ":x:")
+                            output)
+                    thread-ts nil t))
+                  ;; Neither - just show status
+                  (t
+                   (agent-shell-to-go--send
+                    (if (equal status "completed") ":white_check_mark:" ":x:")
+                    thread-ts)))))))))))  ; truncate=t
   (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)

@@ -152,7 +152,7 @@ SLACK_CHANNEL_ID=C0123456789
 SLACK_APP_TOKEN=xapp-your-app-token
 ```
 
-Make sure this file is not in any git repository and has restricted permissions (`chmod 600`).
+Make sure this file is gitignored if your config is in a repository.
 
 ### 3. Add to your Emacs config
 

@@ -777,6 +777,47 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
   '("png" "jpg" "jpeg" "gif" "webp" "bmp" "svg")
   "File extensions recognized as images for upload to Slack.")
 
+(defun agent-shell-to-go--extract-diff (update)
+  "Extract diff info from tool call UPDATE.
+Returns (old-text . new-text) or nil if no diff found."
+  (let* ((content (alist-get 'content update))
+         (raw-input (alist-get 'rawInput update))
+         ;; Try content with type=diff
+         (diff-content (and content
+                            (equal (alist-get 'type content) "diff")
+                            content))
+         ;; Try rawInput with old_str/new_str (Copilot style)
+         (raw-diff (and raw-input
+                        (alist-get 'new_str raw-input)
+                        raw-input)))
+    (cond
+     (diff-content
+      (cons (or (alist-get 'oldText diff-content) "")
+            (alist-get 'newText diff-content)))
+     (raw-diff
+      (cons (or (alist-get 'old_str raw-diff) "")
+            (alist-get 'new_str raw-diff))))))
+
+(defun agent-shell-to-go--format-diff-for-slack (old-text new-text)
+  "Format a diff between OLD-TEXT and NEW-TEXT for Slack."
+  (let ((old-file (make-temp-file "old"))
+        (new-file (make-temp-file "new")))
+    (unwind-protect
+        (progn
+          (with-temp-file old-file (insert (or old-text "")))
+          (with-temp-file new-file (insert (or new-text "")))
+          (with-temp-buffer
+            (call-process "diff" nil t nil "-U3" old-file new-file)
+            ;; Remove file header lines
+            (goto-char (point-min))
+            (when (looking-at "^---")
+              (delete-region (point) (progn (forward-line 1) (point))))
+            (when (looking-at "^\\+\\+\\+")
+              (delete-region (point) (progn (forward-line 1) (point))))
+            (buffer-string)))
+      (delete-file old-file)
+      (delete-file new-file))))
+
 (defun agent-shell-to-go--expand-message (channel ts)
   "Expand truncated message at TS in CHANNEL to show full text.
 If the full text exceeds Slack's limit, show as much as possible with a note."
@@ -1169,11 +1210,22 @@ ORIG-FN is the original function, ARGS are its arguments."
                     (file-path (alist-get 'file_path raw-input))
                     (display (or command
                                  file-path
-                                 title)))
+                                 title))
+                    ;; Extract diff if present
+                    (diff (agent-shell-to-go--extract-diff update))
+                    (diff-text (and diff
+                                    (agent-shell-to-go--format-diff-for-slack
+                                     (car diff) (cdr diff)))))
                (when display
-                 (agent-shell-to-go--send
-                  (format ":hourglass: `%s`" display)
-                  thread-ts nil t))))  ; truncate=t
+                 (if (and diff-text (> (length diff-text) 0))
+                     ;; Show file path with diff
+                     (agent-shell-to-go--send
+                      (format ":hourglass: `%s`\n```diff\n%s\n```" display diff-text)
+                      thread-ts nil t)
+                   ;; No diff, just show command/title
+                   (agent-shell-to-go--send
+                    (format ":hourglass: `%s`" display)
+                    thread-ts nil t)))))  ; truncate=t
             ("tool_call_update"
              ;; Tool call completed - show output
              (let* ((status (alist-get 'status update))

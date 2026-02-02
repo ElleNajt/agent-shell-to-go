@@ -389,9 +389,10 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
   "Record an upload timestamp for rate limiting."
   (push (float-time) agent-shell-to-go--upload-timestamps))
 
-(defcustom agent-shell-to-go-mentioned-file-ttl 300
+(defcustom agent-shell-to-go-mentioned-file-ttl 14400
   "Time in seconds to remember mentioned files for image upload filtering.
-Files mentioned in tool calls are eligible for upload for this long."
+Files mentioned in tool calls are eligible for upload for this long.
+Default is 4 hours (14400 seconds)."
   :type 'integer
   :group 'agent-shell-to-go)
 

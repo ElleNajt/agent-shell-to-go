@@ -16,22 +16,53 @@ Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhe
 
 ### 1. Create a Slack App
 
-1. Go to https://api.slack.com/apps and create a new app
-2. Add these **Bot Token Scopes** under OAuth & Permissions:
-   - `chat:write`
-   - `channels:history`
-   - `channels:read`
-   - `reactions:read`
-3. Enable **Socket Mode** (under Socket Mode in sidebar):
-   - Generate an app-level token with `connections:write` scope
-   - Copy the token (starts with `xapp-`)
-4. Add **Event Subscriptions** (under Event Subscriptions > Subscribe to bot events):
-   - `message.channels`
-   - `reaction_added`
-5. Install the app to your workspace
-6. Copy the Bot User OAuth Token (starts with `xoxb-`)
-7. Invite the bot to your channel (`/invite @your-bot-name`)
-8. Get the channel ID (right-click channel > View channel details > copy ID at bottom)
+#### Step-by-step guide
+
+1. **Create the app**
+   - Go to https://api.slack.com/apps
+   - Click "Create New App" → "From scratch"
+   - Name it something like "agent-shell-to-go"
+   - Select your workspace
+
+2. **Enable Socket Mode**
+   - In the sidebar, click "Socket Mode"
+   - Toggle "Enable Socket Mode" ON
+   - When prompted, create an app-level token:
+     - Name it "websocket" (or anything)
+     - Add the `connections:write` scope
+     - Click "Generate"
+   - **Save this token** (starts with `xapp-`) - you'll need it later
+
+3. **Add Bot Token Scopes**
+   - In the sidebar, click "OAuth & Permissions"
+   - Scroll to "Scopes" → "Bot Token Scopes"
+   - Add these scopes:
+     - `chat:write` - send messages
+     - `channels:history` - read channel messages
+     - `channels:read` - see channel info
+     - `reactions:read` - see emoji reactions
+
+4. **Subscribe to Events**
+   - In the sidebar, click "Event Subscriptions"
+   - Toggle "Enable Events" ON
+   - Expand "Subscribe to bot events"
+   - Add these events:
+     - `message.channels` - receive messages in channels
+     - `reaction_added` - receive emoji reactions
+   - Click "Save Changes"
+
+5. **Install the App**
+   - In the sidebar, click "Install App"
+   - Click "Install to Workspace"
+   - Review permissions and click "Allow"
+   - **Copy the "Bot User OAuth Token"** (starts with `xoxb-`)
+
+6. **Set up your channel**
+   - Create a channel or use an existing one (e.g., `#agent-shell`)
+   - Invite the bot: type `/invite @your-bot-name` in the channel
+   - Get the channel ID:
+     - Right-click the channel name → "View channel details"
+     - Scroll to the bottom and copy the Channel ID (starts with `C`)
 
 ### 2. Configure credentials
 

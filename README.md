@@ -208,14 +208,22 @@ Use these anywhere in the channel (not in threads):
 
 ### Reactions
 
-React to any message in the thread:
+React to messages in the thread:
 
+**Permission requests:**
 | Emoji | Action |
 |-------|--------|
-| :white_check_mark: or :+1: | Allow permission once |
-| :unlock: or :star: | Always allow permission |
-| :x: or :-1: | Reject permission |
-| :see_no_evil: or :no_bell: or :eyes: | Hide message (remove reaction to unhide) |
+| :white_check_mark: or :+1: | Allow once |
+| :unlock: or :star: | Always allow |
+| :x: or :-1: | Reject |
+
+**Message visibility:**
+| Emoji | Action |
+|-------|--------|
+| :see_no_evil: or :no_bell: | Hide message completely (remove to unhide) |
+| :eyes: | Expand truncated message (remove to re-truncate) |
+
+Long messages are automatically truncated to 500 characters with `:eyes: _for more_` at the end. Add the :eyes: reaction to see the full content.
 
 ## Customization
 

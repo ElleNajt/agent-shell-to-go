@@ -290,11 +290,21 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
   "Map Slack reaction names to permission actions.")
 
 (defconst agent-shell-to-go--hide-reactions
-  '("no_bell" "see_no_evil" "eyes")
+  '("no_bell" "see_no_evil")
   "Reactions that trigger hiding a message.")
+
+(defconst agent-shell-to-go--expand-reactions
+  '("eyes")
+  "Reactions that trigger expanding a truncated message.")
 
 (defcustom agent-shell-to-go-hidden-messages-dir "~/.agent-shell/slack/"
   "Directory to store original content of hidden messages.
+Messages are stored as CHANNEL/TIMESTAMP.txt files."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-truncated-messages-dir "~/.agent-shell/slack-truncated/"
+  "Directory to store full content of truncated messages.
 Messages are stored as CHANNEL/TIMESTAMP.txt files."
   :type 'string
   :group 'agent-shell-to-go)
@@ -321,15 +331,25 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
 
 (defun agent-shell-to-go--send (text &optional thread-ts channel-id)
   "Send TEXT to Slack, optionally in THREAD-TS thread.
-CHANNEL-ID overrides the buffer-local or default channel."
+CHANNEL-ID overrides the buffer-local or default channel.
+If TEXT is truncated, stores the full text for later expansion via 👀."
   (let* ((channel (or channel-id
                       agent-shell-to-go--channel-id
                       agent-shell-to-go-channel-id))
+         (clean-text (agent-shell-to-go--strip-non-ascii text))
+         (truncated-text (agent-shell-to-go--truncate-message clean-text 500))
+         (was-truncated (not (equal clean-text truncated-text)))
          (data `((channel . ,channel)
-                 (text . ,(agent-shell-to-go--strip-non-ascii text)))))
+                 (text . ,truncated-text))))
     (when thread-ts
       (push `(thread_ts . ,thread-ts) data))
-    (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
+    (let ((response (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
+      ;; If truncated, save full text for expansion
+      (when was-truncated
+        (let ((msg-ts (alist-get 'ts response)))
+          (when msg-ts
+            (agent-shell-to-go--save-truncated-message channel msg-ts clean-text))))
+      response)))
 
 (defun agent-shell-to-go--get-reactions (msg-ts)
   "Get reactions on message MSG-TS."
@@ -361,21 +381,19 @@ CHANNEL-ID overrides the buffer-local or default channel."
 ;;; Message formatting
 
 (defun agent-shell-to-go--truncate-message (text &optional max-len)
-  "Truncate TEXT to MAX-LEN (default 3000) for Slack."
-  (let ((max-len (or max-len 3000)))
+  "Truncate TEXT to MAX-LEN (default 500) for Slack."
+  (let ((max-len (or max-len 500)))
     (if (> (length text) max-len)
-        (concat (substring text 0 max-len) "\n... (truncated)")
+        (concat (substring text 0 max-len) "\n:eyes: _for more_")
       text)))
 
 (defun agent-shell-to-go--format-user-message (prompt)
   "Format user PROMPT for Slack."
-  (format ":bust_in_silhouette: *User*\n%s"
-          (agent-shell-to-go--truncate-message prompt)))
+  (format ":bust_in_silhouette: *User*\n%s" prompt))
 
 (defun agent-shell-to-go--format-agent-message (text)
   "Format agent TEXT for Slack."
-  (format ":robot_face: *Agent*\n%s"
-          (agent-shell-to-go--truncate-message text)))
+  (format ":robot_face: *Agent*\n%s" text))
 
 (defun agent-shell-to-go--format-tool-call (title status &optional output)
   "Format tool call with TITLE, STATUS, and optional OUTPUT for Slack."
@@ -385,11 +403,8 @@ CHANNEL-ID overrides the buffer-local or default channel."
                  ("pending" ":hourglass:")
                  (_ ":wrench:"))))
     (if (and output (not (string-empty-p output)))
-        (format "%s `%s`\n```\n%s\n```"
-                emoji
-                (agent-shell-to-go--truncate-message title 200)
-                (agent-shell-to-go--truncate-message output 1500))
-      (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200)))))
+        (format "%s `%s`\n```\n%s\n```" emoji title output)
+      (format "%s `%s`" emoji title))))
 
 ;;; WebSocket / Socket Mode
 
@@ -519,6 +534,57 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
     (when (file-exists-p path)
       (delete-file path))))
 
+;;; Truncated message storage
+
+(defun agent-shell-to-go--truncated-message-path (channel ts)
+  "Return the file path for storing truncated message full content.
+CHANNEL is the Slack channel ID, TS is the message timestamp."
+  (expand-file-name (concat channel "/" ts ".txt")
+                    agent-shell-to-go-truncated-messages-dir))
+
+(defun agent-shell-to-go--save-truncated-message (channel ts full-text)
+  "Save FULL-TEXT of truncated message at TS in CHANNEL to disk."
+  (let ((path (agent-shell-to-go--truncated-message-path channel ts)))
+    (make-directory (file-name-directory path) t)
+    (with-temp-file path
+      (insert full-text))))
+
+(defun agent-shell-to-go--load-truncated-message (channel ts)
+  "Load the full text of truncated message at TS in CHANNEL."
+  (let ((path (agent-shell-to-go--truncated-message-path channel ts)))
+    (when (file-exists-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (buffer-string)))))
+
+(defun agent-shell-to-go--delete-truncated-message-file (channel ts)
+  "Delete the stored truncated message file for TS in CHANNEL."
+  (let ((path (agent-shell-to-go--truncated-message-path channel ts)))
+    (when (file-exists-p path)
+      (delete-file path))))
+
+(defun agent-shell-to-go--expand-message (channel ts)
+  "Expand truncated message at TS in CHANNEL to show full text."
+  (let ((full-text (agent-shell-to-go--load-truncated-message channel ts)))
+    (when full-text
+      (agent-shell-to-go--api-request
+       "POST" "chat.update"
+       `((channel . ,channel)
+         (ts . ,ts)
+         (text . ,full-text))))))
+
+(defun agent-shell-to-go--collapse-message (channel ts)
+  "Re-truncate expanded message at TS in CHANNEL."
+  (let* ((full-text (agent-shell-to-go--load-truncated-message channel ts))
+         (truncated (and full-text
+                         (agent-shell-to-go--truncate-message full-text 500))))
+    (when truncated
+      (agent-shell-to-go--api-request
+       "POST" "chat.update"
+       `((channel . ,channel)
+         (ts . ,ts)
+         (text . ,truncated))))))
+
 (defun agent-shell-to-go--hide-message (channel ts)
   "Hide message at TS in CHANNEL by replacing with collapsed text."
   ;; First fetch and save the original message
@@ -550,7 +616,10 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
          (reaction (alist-get 'reaction event)))
     ;; Check if it was a hide reaction being removed
     (when (member reaction agent-shell-to-go--hide-reactions)
-      (agent-shell-to-go--unhide-message channel msg-ts))))
+      (agent-shell-to-go--unhide-message channel msg-ts))
+    ;; Check if it was an expand reaction being removed (re-truncate)
+    (when (member reaction agent-shell-to-go--expand-reactions)
+      (agent-shell-to-go--collapse-message channel msg-ts))))
 
 (defun agent-shell-to-go--handle-reaction-event (event)
   "Handle a reaction EVENT from Slack."
@@ -562,6 +631,9 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
     ;; Check for hide reactions first
     (when (member reaction agent-shell-to-go--hide-reactions)
       (agent-shell-to-go--hide-message channel msg-ts))
+    ;; Check for expand reactions (show full truncated message)
+    (when (member reaction agent-shell-to-go--expand-reactions)
+      (agent-shell-to-go--expand-message channel msg-ts))
     ;; Then check for permission reactions
     (when pending
       (let* ((info (cdr pending))
@@ -791,8 +863,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                                  title)))
                (when display
                  (agent-shell-to-go--send
-                  (format ":hourglass: `%s`"
-                          (agent-shell-to-go--truncate-message display 500))
+                  (format ":hourglass: `%s`" display)
                   thread-ts))))
             ("tool_call_update"
              ;; Tool call completed - show output
@@ -803,7 +874,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                  (agent-shell-to-go--send
                   (format "%s\n```\n%s\n```"
                           (if (equal status "completed") ":white_check_mark:" ":x:")
-                          (agent-shell-to-go--truncate-message output 1500))
+                          output)
                   thread-ts))))))))
     (apply orig-fn args)))
 

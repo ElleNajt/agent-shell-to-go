@@ -261,6 +261,12 @@ Returns the channel ID."
 (defvar-local agent-shell-to-go--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
+(defvar-local agent-shell-to-go--file-watcher nil
+  "Process for fswatch watching image files in this buffer's project.")
+
+(defvar-local agent-shell-to-go--uploaded-images nil
+  "Hash table of image paths already uploaded, to avoid duplicates.")
+
 (defvar agent-shell-to-go--pending-permissions nil
   "Alist of pending permission requests.
 Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
@@ -329,6 +335,113 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (apply #'call-process "curl" nil t nil args)
       (goto-char (point-min))
       (json-read))))
+
+(defun agent-shell-to-go--image-file-p (path)
+  "Return non-nil if PATH is an image file based on extension."
+  (when (and path (stringp path))
+    (let ((ext (downcase (or (file-name-extension path) ""))))
+      (member ext agent-shell-to-go--image-extensions))))
+
+(defun agent-shell-to-go--handle-fswatch-output (buffer output)
+  "Handle fswatch OUTPUT, uploading new images for BUFFER."
+  (when (buffer-live-p buffer)
+    (dolist (file-path (split-string output "\n" t))
+      (when (and (agent-shell-to-go--image-file-p file-path)
+                 (file-exists-p file-path)
+                 (> (file-attribute-size (file-attributes file-path)) 0))
+        (with-current-buffer buffer
+          ;; Initialize hash table if needed
+          (unless agent-shell-to-go--uploaded-images
+            (setq agent-shell-to-go--uploaded-images (make-hash-table :test 'equal)))
+          ;; Check if already uploaded
+          (unless (gethash file-path agent-shell-to-go--uploaded-images)
+            ;; Mark as uploaded
+            (puthash file-path t agent-shell-to-go--uploaded-images)
+            ;; Small delay to ensure file is fully written
+            (run-at-time 0.5 nil
+                         (lambda ()
+                           (when (and (buffer-live-p buffer)
+                                      (file-exists-p file-path))
+                             (with-current-buffer buffer
+                               (agent-shell-to-go--debug "fswatch uploading: %s" file-path)
+                               (agent-shell-to-go--upload-file
+                                file-path
+                                agent-shell-to-go--channel-id
+                                agent-shell-to-go--thread-ts
+                                (format ":frame_with_picture: `%s`"
+                                        (file-name-nondirectory file-path)))))))))))))
+
+(defun agent-shell-to-go--start-file-watcher ()
+  "Start fswatch for new image files in the project directory (recursive)."
+  (agent-shell-to-go--stop-file-watcher)
+  (let* ((project-dir (agent-shell-to-go--get-project-path))
+         (buffer (current-buffer)))
+    (when (and project-dir (file-directory-p project-dir))
+      (if (not (executable-find "fswatch"))
+          (agent-shell-to-go--debug "fswatch not found, image watching disabled")
+        (condition-case err
+            (let ((proc (start-process
+                         "agent-shell-to-go-fswatch"
+                         nil  ; no buffer
+                         "fswatch"
+                         "-r"  ; recursive
+                         "--event" "Created"
+                         "--event" "Updated"
+                         project-dir)))
+              (set-process-filter
+               proc
+               (lambda (_proc output)
+                 (agent-shell-to-go--handle-fswatch-output buffer output)))
+              (set-process-query-on-exit-flag proc nil)
+              (setq agent-shell-to-go--file-watcher proc)
+              (agent-shell-to-go--debug "started fswatch on %s" project-dir))
+          (error
+           (agent-shell-to-go--debug "failed to start fswatch: %s" err)))))))
+
+(defun agent-shell-to-go--stop-file-watcher ()
+  "Stop fswatch process."
+  (when (and agent-shell-to-go--file-watcher
+             (process-live-p agent-shell-to-go--file-watcher))
+    (ignore-errors (kill-process agent-shell-to-go--file-watcher)))
+  (setq agent-shell-to-go--file-watcher nil))
+
+(defun agent-shell-to-go--upload-file (file-path channel-id &optional thread-ts comment)
+  "Upload FILE-PATH to Slack CHANNEL-ID, optionally in THREAD-TS with COMMENT.
+Uses the new Slack files API (getUploadURLExternal + completeUploadExternal)."
+  (when (and file-path (file-exists-p file-path))
+    (let* ((filename (file-name-nondirectory file-path))
+           (file-size (file-attribute-size (file-attributes file-path)))
+           ;; Step 1: Get upload URL
+           (url-response (agent-shell-to-go--api-request
+                          "GET"
+                          (format "files.getUploadURLExternal?filename=%s&length=%d"
+                                  (url-hexify-string filename)
+                                  file-size)))
+           (upload-url (alist-get 'upload_url url-response))
+           (file-id (alist-get 'file_id url-response)))
+      (when (and upload-url file-id)
+        ;; Step 2: Upload the file content via curl
+        (let ((upload-result
+               (with-temp-buffer
+                 (call-process "curl" nil t nil
+                               "-s" "-X" "POST"
+                               "-F" (format "file=@%s" file-path)
+                               upload-url)
+                 (buffer-string))))
+          (agent-shell-to-go--debug "upload result: %s" upload-result)
+          ;; Step 3: Complete the upload and share to channel
+          (let* ((files-data `[((id . ,file-id))])
+                 (complete-data `((files . ,files-data)
+                                  (channel_id . ,channel-id)))
+                 (_ (when thread-ts
+                      (push `(thread_ts . ,thread-ts) complete-data)))
+                 (_ (when comment
+                      (push `(initial_comment . ,comment) complete-data)))
+                 (complete-response (agent-shell-to-go--api-request
+                                     "POST" "files.completeUploadExternal"
+                                     complete-data)))
+            (agent-shell-to-go--debug "complete upload response: %s" complete-response)
+            complete-response))))))
 
 (defun agent-shell-to-go--send (text &optional thread-ts channel-id truncate)
   "Send TEXT to Slack, optionally in THREAD-TS thread.
@@ -608,6 +721,10 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
 (defconst agent-shell-to-go--truncation-note
   "\n_... (full text too long for Slack)_"
   "Note appended when expanded message still exceeds Slack limit.")
+
+(defconst agent-shell-to-go--image-extensions
+  '("png" "jpg" "jpeg" "gif" "webp" "bmp" "svg")
+  "File extensions recognized as images for upload to Slack.")
 
 (defun agent-shell-to-go--expand-message (channel ts)
   "Expand truncated message at TS in CHANNEL to show full text.
@@ -1136,10 +1253,16 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
 
+  ;; Start file watcher for auto-uploading images
+  (agent-shell-to-go--start-file-watcher)
+
   (agent-shell-to-go--debug "mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
 
 (defun agent-shell-to-go--disable ()
   "Disable Slack mirroring for this buffer."
+  ;; Stop file watcher
+  (agent-shell-to-go--stop-file-watcher)
+
   (when agent-shell-to-go--thread-ts
     (agent-shell-to-go--send ":wave: Session ended" agent-shell-to-go--thread-ts))
 

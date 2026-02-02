@@ -27,6 +27,7 @@ Planned/possible integrations:
 - Permission requests with reaction-based approval
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
 - Start new agents remotely via slash commands
+- **Image uploads** - images written by the agent are automatically uploaded to Slack
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
 ## Security Warning
@@ -248,9 +249,28 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 (setq agent-shell-to-go-start-agent-function #'my/start-claude-code)
 ```
 
+## Troubleshooting
+
+### Agent gets stuck when writing to new directories
+
+If your agent gets stuck when trying to create a file in a directory that doesn't exist, Emacs may be prompting for confirmation. Doom Emacs has a `doom-create-missing-directories-h` hook that prompts `y-or-n-p` before creating directories.
+
+To auto-create directories without prompting, add this to your config:
+
+```elisp
+;; Override Doom's directory creation to not prompt (for agent-shell compatibility)
+(advice-add 'doom-create-missing-directories-h :override
+            (lambda ()
+              (unless (file-remote-p buffer-file-name)
+                (let ((parent-directory (file-name-directory buffer-file-name)))
+                  (when (and parent-directory (not (file-directory-p parent-directory)))
+                    (make-directory parent-directory 'parents)
+                    t)))))
+```
+
 ## Roadmap
 
-- [ ] Image fetching - view images/screenshots from agent responses (via `files.upload` API, needs `files:write` scope)
+- [x] Image uploads - images written by the agent are automatically uploaded to Slack
 - [ ] Bookmarks - bookmark interesting messages, retrieve with `/bookmarks`
 - [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically

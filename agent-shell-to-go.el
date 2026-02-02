@@ -1306,17 +1306,28 @@ ORIG-FN is the original function, ARGS are its arguments."
                     thread-ts)))))))))))  ; truncate=t
   (apply orig-fn args))
 
-(defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
-  "Advice for agent-shell-heartbeat-stop. Flush agent message to Slack.
+(defun agent-shell-to-go--on-heartbeat-start (orig-fn &rest args)
+  "Advice for agent-shell-heartbeat-start. Send thinking indicator to Slack.
 ORIG-FN is the original function, ARGS are its arguments."
   (when (and agent-shell-to-go-mode
-             agent-shell-to-go--thread-ts
-             agent-shell-to-go--current-agent-message
-             (> (length agent-shell-to-go--current-agent-message) 0))
-    (agent-shell-to-go--send
-     (agent-shell-to-go--format-agent-message agent-shell-to-go--current-agent-message)
-     agent-shell-to-go--thread-ts)
-    (setq agent-shell-to-go--current-agent-message nil))
+             agent-shell-to-go--thread-ts)
+    (agent-shell-to-go--send ":thinking_face: _Thinking..._" agent-shell-to-go--thread-ts))
+  (apply orig-fn args))
+
+(defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
+  "Advice for agent-shell-heartbeat-stop. Flush agent message and send ready indicator.
+ORIG-FN is the original function, ARGS are its arguments."
+  (when (and agent-shell-to-go-mode
+             agent-shell-to-go--thread-ts)
+    ;; Flush any pending agent message
+    (when (and agent-shell-to-go--current-agent-message
+               (> (length agent-shell-to-go--current-agent-message) 0))
+      (agent-shell-to-go--send
+       (agent-shell-to-go--format-agent-message agent-shell-to-go--current-agent-message)
+       agent-shell-to-go--thread-ts)
+      (setq agent-shell-to-go--current-agent-message nil))
+    ;; Send ready for input indicator
+    (agent-shell-to-go--send ":speech_balloon: _Ready for input_" agent-shell-to-go--thread-ts))
   (apply orig-fn args))
 
 ;;; Command handling
@@ -1509,6 +1520,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
+  (advice-add 'agent-shell-heartbeat-start :around #'agent-shell-to-go--on-heartbeat-start)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
 
   ;; Start file watcher for auto-uploading images
@@ -1534,6 +1546,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
+    (advice-remove 'agent-shell-heartbeat-start #'agent-shell-to-go--on-heartbeat-start)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
 
   (agent-shell-to-go--debug "mirroring disabled"))

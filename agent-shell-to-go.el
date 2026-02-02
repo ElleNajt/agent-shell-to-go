@@ -69,6 +69,17 @@
   :type 'string
   :group 'agent-shell-to-go)
 
+(defcustom agent-shell-to-go-default-folder "~/"
+  "Default folder for /new-agent command when no folder is specified."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-start-agent-function #'agent-shell
+  "Function to call to start a new agent-shell.
+Override this if you have a custom agent-shell starter function."
+  :type 'function
+  :group 'agent-shell-to-go)
+
 (defun agent-shell-to-go--load-env ()
   "Load credentials from .env file if not already set."
   (when (file-exists-p agent-shell-to-go-env-file)
@@ -105,6 +116,9 @@
 (defvar agent-shell-to-go--pending-permissions nil
   "Alist of pending permission requests.
 Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
+
+(defvar-local agent-shell-to-go--from-slack nil
+  "Non-nil when the current message originated from Slack (to prevent echo).")
 
 (defvar agent-shell-to-go--websocket nil
   "The WebSocket connection to Slack.")
@@ -245,9 +259,13 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
       (websocket-send-text agent-shell-to-go--websocket
                            (json-encode `((envelope_id . ,envelope-id)))))
     ;; Handle different event types
+    (message "agent-shell-to-go: websocket message type: %s" type)
     (pcase type
       ("events_api"
        (agent-shell-to-go--handle-event (alist-get 'payload data)))
+      ("slash_commands"
+       (message "agent-shell-to-go: got slash_commands payload: %s" (alist-get 'payload data))
+       (agent-shell-to-go--handle-slash-command (alist-get 'payload data)))
       ("hello"
        (message "agent-shell-to-go: WebSocket connected"))
       ("disconnect"
@@ -311,6 +329,79 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
               ;; Remove from pending
               (setq agent-shell-to-go--pending-permissions
                     (assq-delete-all msg-ts agent-shell-to-go--pending-permissions)))))))))
+
+(defun agent-shell-to-go--start-agent-in-folder (folder &optional use-container)
+  "Start a new agent in FOLDER. If USE-CONTAINER is non-nil, pass prefix arg."
+  (message "agent-shell-to-go: starting agent in %s (container: %s)" folder use-container)
+  (if (file-directory-p folder)
+      (let ((default-directory folder))
+        (save-window-excursion
+          (condition-case err
+              (progn
+                ;; Pass '(4) for C-u prefix, nil otherwise
+                (funcall agent-shell-to-go-start-agent-function
+                         (if use-container '(4) nil))
+                (when agent-shell-to-go--thread-ts
+                  (agent-shell-to-go--send
+                   (format ":rocket: New agent started in `%s`%s"
+                           folder
+                           (if use-container " (container)" ""))
+                   agent-shell-to-go--thread-ts)))
+            (error
+             (message "agent-shell-to-go: error starting agent: %s" err)))))
+    (message "agent-shell-to-go: folder does not exist: %s" folder)))
+
+(defun agent-shell-to-go--get-open-projects ()
+  "Get list of open projects from Emacs.
+Tries projectile first, then project.el, then falls back to buffer directories."
+  (delete-dups
+   (delq nil
+         (cond
+          ;; Try projectile
+          ((fboundp 'projectile-open-projects)
+           (projectile-open-projects))
+          ;; Try project.el (Emacs 28+)
+          ((fboundp 'project-known-project-roots)
+           (project-known-project-roots))
+          ;; Fallback: unique directories from file-visiting buffers
+          (t
+           (mapcar (lambda (buf)
+                     (when-let ((file (buffer-file-name buf)))
+                       (file-name-directory file)))
+                   (buffer-list)))))))
+
+(defun agent-shell-to-go--handle-slash-command (payload)
+  "Handle a slash command PAYLOAD from Slack."
+  (let* ((command (alist-get 'command payload))
+         (text (alist-get 'text payload))
+         (channel (alist-get 'channel_id payload))
+         (folder (expand-file-name
+                  (if (and text (not (string-empty-p text)))
+                      text
+                    agent-shell-to-go-default-folder))))
+    (message "agent-shell-to-go: slash command: %s %s" command text)
+    (pcase command
+      ("/new-agent"
+       (agent-shell-to-go--start-agent-in-folder folder nil))
+      ("/new-agent-container"
+       (agent-shell-to-go--start-agent-in-folder folder t))
+      ("/projects"
+       (let ((projects (agent-shell-to-go--get-open-projects)))
+         (if projects
+             (progn
+               (agent-shell-to-go--api-request
+                "POST" "chat.postMessage"
+                `((channel . ,channel)
+                  (text . ":file_folder: *Open Projects:*")))
+               (dolist (project projects)
+                 (agent-shell-to-go--api-request
+                  "POST" "chat.postMessage"
+                  `((channel . ,channel)
+                    (text . ,project)))))
+           (agent-shell-to-go--api-request
+            "POST" "chat.postMessage"
+            `((channel . ,channel)
+              (text . ":shrug: No open projects found")))))))))
 
 (defun agent-shell-to-go--websocket-connect ()
   "Connect to Slack via WebSocket."
@@ -387,7 +478,9 @@ ORIG-FN is the original function, ARGS are its arguments."
 (defun agent-shell-to-go--on-send-command (orig-fn &rest args)
   "Advice for agent-shell--send-command. Send user prompt to Slack.
 ORIG-FN is the original function, ARGS are its arguments."
-  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-ts)
+  (when (and agent-shell-to-go-mode
+             agent-shell-to-go--thread-ts
+             (not agent-shell-to-go--from-slack))
     (let ((prompt (plist-get args :prompt)))
       (when prompt
         (agent-shell-to-go--send
@@ -519,11 +612,15 @@ ORIG-FN is the original function, ARGS are its arguments."
 (defun agent-shell-to-go--inject-message (text)
   "Inject TEXT from Slack into the current agent-shell buffer."
   (when (derived-mode-p 'agent-shell-mode)
-    (save-excursion
-      (goto-char (point-max))
-      (insert text))
-    (goto-char (point-max))
-    (call-interactively #'shell-maker-submit)))
+    (setq agent-shell-to-go--from-slack t)
+    (unwind-protect
+        (progn
+          (save-excursion
+            (goto-char (point-max))
+            (insert text))
+          (goto-char (point-max))
+          (call-interactively #'shell-maker-submit))
+      (setq agent-shell-to-go--from-slack nil))))
 
 ;;; Minor mode
 

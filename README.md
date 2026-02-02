@@ -10,6 +10,7 @@ Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhe
 - Real-time via Slack Socket Mode (WebSocket) - no polling delay
 - Permission requests appear in Slack with emoji reactions to approve/reject
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
+- Slash commands to start new agents from Slack (`/new-agent`, `/projects`)
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
 ## Setup
@@ -51,13 +52,20 @@ Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhe
      - `reaction_added` - receive emoji reactions
    - Click "Save Changes"
 
-5. **Install the App**
+5. **Add Slash Commands**
+   - In the sidebar, click "Slash Commands"
+   - Create these commands:
+     - `/new-agent` - Description: "Start new agent in a folder"
+     - `/new-agent-container` - Description: "Start new agent in a container"
+     - `/projects` - Description: "List open projects from Emacs"
+
+6. **Install the App**
    - In the sidebar, click "Install App"
    - Click "Install to Workspace"
    - Review permissions and click "Allow"
    - **Copy the "Bot User OAuth Token"** (starts with `xoxb-`)
 
-6. **Set up your channel**
+7. **Set up your channel**
    - Create a channel or use an existing one (e.g., `#agent-shell`)
    - Invite the bot: type `/invite @your-bot-name` in the channel
    - Get the channel ID:
@@ -107,6 +115,16 @@ Send these in the Slack thread to control the session:
 | `!mode` | Show current mode |
 | `!help` | Show available commands |
 
+### Slash Commands
+
+Use these anywhere in the channel (not in threads):
+
+| Command | Description |
+|---------|-------------|
+| `/new-agent [folder]` | Start a new agent in a folder (defaults to configured folder) |
+| `/new-agent-container [folder]` | Start a new agent in a container (like `C-u` prefix) |
+| `/projects` | List open projects from Emacs (each as a separate message for easy copy) |
+
 ### Permission Reactions
 
 When Claude requests permission (e.g., to run a command), you'll see a message in Slack. React with:
@@ -127,6 +145,12 @@ When Claude requests permission (e.g., to run a command), you'll see a message i
 (setq agent-shell-to-go-bot-token "xoxb-...")
 (setq agent-shell-to-go-channel-id "C...")
 (setq agent-shell-to-go-app-token "xapp-...")
+
+;; Default folder for /new-agent when no folder is specified
+(setq agent-shell-to-go-default-folder "~/code")
+
+;; Custom function to start agents (e.g., your own claude-code wrapper)
+(setq agent-shell-to-go-start-agent-function #'my/start-claude-code)
 ```
 
 ## License

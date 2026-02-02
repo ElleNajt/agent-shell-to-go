@@ -1034,8 +1034,49 @@ ORIG-FN is the original function, ARGS are its arguments."
                 "`!safe` - Accept edits mode\n"
                 "`!plan` - Plan mode\n"
                 "`!mode` - Show current mode\n"
-                "`!stop` - Interrupt the agent")
+                "`!stop` - Interrupt the agent\n"
+                "`!latest` - Jump to bottom of thread")
         thread-ts)
+       t)
+      ("!latest"
+       (agent-shell-to-go--send ":point_down:" thread-ts)
+       t)
+      ("!debug"
+       (with-current-buffer buffer
+         (let* ((state agent-shell--state)
+                (session-id (map-nested-elt state '(:session :id)))
+                (mode-id (map-nested-elt state '(:session :mode-id)))
+                (transcript-dir (expand-file-name "transcripts" 
+                                                  (or (bound-and-true-p agent-shell-sessions-dir)
+                                                      "~/.agent-shell")))
+                (transcript-files (and (file-directory-p transcript-dir)
+                                       (directory-files transcript-dir nil "\\.md$" t)))
+                (latest-transcript (and transcript-files
+                                        (car (last (sort transcript-files #'string<)))))
+                (truncated-dir (expand-file-name 
+                                (buffer-local-value 'agent-shell-to-go--channel-id buffer)
+                                agent-shell-to-go-truncated-messages-dir))
+                (truncated-count (if (file-directory-p truncated-dir)
+                                     (length (directory-files truncated-dir nil "\\.txt$"))
+                                   0)))
+           (agent-shell-to-go--send
+            (format (concat ":bug: *Debug Info*\n"
+                            "*Buffer:* `%s`\n"
+                            "*Thread:* `%s`\n"
+                            "*Channel:* `%s`\n"
+                            "*Session ID:* `%s`\n"
+                            "*Mode:* `%s`\n"
+                            "*Transcript:* `%s`\n"
+                            "*Truncated msgs:* %d files in `%s`")
+                    (buffer-name buffer)
+                    thread-ts
+                    agent-shell-to-go--channel-id
+                    (or session-id "none")
+                    (or mode-id "default")
+                    (or latest-transcript "none")
+                    truncated-count
+                    truncated-dir)
+            thread-ts)))
        t)
       ("!stop"
        (condition-case err

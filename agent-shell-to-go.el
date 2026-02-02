@@ -1,0 +1,376 @@
+;;; agent-shell-to-go.el --- Take your agent-shell sessions anywhere -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Elle Najt
+
+;; Author: Elle Najt
+;; URL: https://github.com/ElleNajt/agent-shell-to-go
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1") (agent-shell "0.33.1"))
+;; Keywords: convenience, tools, ai
+
+;; This file is not part of GNU Emacs.
+
+;;; Commentary:
+
+;; agent-shell-to-go mirrors your agent-shell conversations to Slack,
+;; letting you interact with your AI agents from your phone or any device.
+;;
+;; Features:
+;; - Each agent-shell session gets its own Slack thread
+;; - Messages you send from Emacs appear in Slack
+;; - Messages you send from Slack get injected back into agent-shell
+;; - Works with any agent-shell agent (Claude, Gemini, etc.)
+;;
+;; Setup:
+;; 1. Create a Slack app with bot token scopes:
+;;    - chat:write
+;;    - channels:history
+;;    - channels:read
+;;
+;; 2. Create ~/.doom.d/.env (or customize `agent-shell-to-go-env-file'):
+;;    SLACK_BOT_TOKEN=xoxb-your-token
+;;    SLACK_CHANNEL_ID=C0123456789
+;;
+;; 3. Add to your config:
+;;    (use-package agent-shell-to-go
+;;      :after agent-shell
+;;      :config
+;;      (agent-shell-to-go-setup))
+
+;;; Code:
+
+(require 'json)
+(require 'url)
+
+(defgroup agent-shell-to-go nil
+  "Take your agent-shell sessions anywhere."
+  :group 'agent-shell
+  :prefix "agent-shell-to-go-")
+
+(defcustom agent-shell-to-go-env-file "~/.doom.d/.env"
+  "Path to .env file containing Slack credentials."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-bot-token nil
+  "Slack bot token (xoxb-...). Loaded from .env if nil."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-channel-id nil
+  "Slack channel ID to post to. Loaded from .env if nil."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-poll-interval 5
+  "Seconds between polling for Slack replies."
+  :type 'integer
+  :group 'agent-shell-to-go)
+
+(defun agent-shell-to-go--load-env ()
+  "Load credentials from .env file if not already set."
+  (when (and (file-exists-p agent-shell-to-go-env-file)
+             (or (null agent-shell-to-go-bot-token)
+                 (null agent-shell-to-go-channel-id)))
+    (with-temp-buffer
+      (insert-file-contents (expand-file-name agent-shell-to-go-env-file))
+      (goto-char (point-min))
+      (while (re-search-forward "^\\([A-Z_]+\\)=\\(.+\\)$" nil t)
+        (let ((key (match-string 1))
+              (value (match-string 2)))
+          (pcase key
+            ("SLACK_BOT_TOKEN"
+             (setq agent-shell-to-go-bot-token value))
+            ("SLACK_CHANNEL_ID"
+             (setq agent-shell-to-go-channel-id value))))))))
+
+;; Internal state
+(defvar-local agent-shell-to-go--thread-ts nil
+  "Slack thread timestamp for this buffer's conversation.")
+
+(defvar-local agent-shell-to-go--last-seen-ts nil
+  "Last message timestamp we've seen in the Slack thread.")
+
+(defvar agent-shell-to-go--poll-timer nil
+  "Timer for polling Slack for replies.")
+
+(defvar agent-shell-to-go--active-buffers nil
+  "List of agent-shell buffers with active Slack mirroring.")
+
+(defvar agent-shell-to-go--bot-user-id-cache nil
+  "Cached bot user ID.")
+
+(defvar-local agent-shell-to-go--current-agent-message nil
+  "Accumulator for streaming agent message chunks.")
+
+;;; Slack API
+
+(defun agent-shell-to-go--api-request (method endpoint &optional data)
+  "Make a Slack API request.
+METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
+  (let* ((url-request-method method)
+         (url-request-extra-headers
+          `(("Authorization" . ,(concat "Bearer " agent-shell-to-go-bot-token))
+            ("Content-Type" . "application/json")))
+         (url-request-data (when data (encode-coding-string (json-encode data) 'utf-8)))
+         (url (concat "https://slack.com/api/" endpoint)))
+    (with-current-buffer (url-retrieve-synchronously url t)
+      (goto-char (point-min))
+      (re-search-forward "\n\n")
+      (let ((response (json-read)))
+        (kill-buffer)
+        response))))
+
+(defun agent-shell-to-go--send (text &optional thread-ts)
+  "Send TEXT to Slack, optionally in THREAD-TS thread."
+  (let ((data `((channel . ,agent-shell-to-go-channel-id)
+                (text . ,text))))
+    (when thread-ts
+      (push `(thread_ts . ,thread-ts) data))
+    (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
+
+(defun agent-shell-to-go--get-thread-replies (thread-ts &optional oldest)
+  "Get replies in THREAD-TS, optionally newer than OLDEST."
+  (let* ((params (format "channel=%s&ts=%s" agent-shell-to-go-channel-id thread-ts))
+         (params (if oldest (concat params "&oldest=" oldest) params))
+         (response (agent-shell-to-go--api-request
+                    "GET"
+                    (concat "conversations.replies?" params))))
+    (alist-get 'messages response)))
+
+(defun agent-shell-to-go--get-bot-user-id ()
+  "Get the bot's user ID."
+  (or agent-shell-to-go--bot-user-id-cache
+      (setq agent-shell-to-go--bot-user-id-cache
+            (alist-get 'user_id
+                       (agent-shell-to-go--api-request "GET" "auth.test")))))
+
+(defun agent-shell-to-go--start-thread (buffer-name)
+  "Start a new Slack thread for BUFFER-NAME, return thread_ts."
+  (let* ((response (agent-shell-to-go--send
+                    (format ":robot_face: *Agent Shell Session*\n`%s`\n_%s_"
+                            buffer-name
+                            (format-time-string "%Y-%m-%d %H:%M:%S"))))
+         (ts (alist-get 'ts response)))
+    ts))
+
+;;; Message formatting
+
+(defun agent-shell-to-go--truncate-message (text &optional max-len)
+  "Truncate TEXT to MAX-LEN (default 3000) for Slack."
+  (let ((max-len (or max-len 3000)))
+    (if (> (length text) max-len)
+        (concat (substring text 0 max-len) "\n... (truncated)")
+      text)))
+
+(defun agent-shell-to-go--format-user-message (prompt)
+  "Format user PROMPT for Slack."
+  (format ":bust_in_silhouette: *User*\n%s"
+          (agent-shell-to-go--truncate-message prompt)))
+
+(defun agent-shell-to-go--format-agent-message (text)
+  "Format agent TEXT for Slack."
+  (format ":robot_face: *Agent*\n%s"
+          (agent-shell-to-go--truncate-message text)))
+
+(defun agent-shell-to-go--format-tool-call (title status)
+  "Format tool call with TITLE and STATUS for Slack."
+  (let ((emoji (pcase status
+                 ("completed" ":white_check_mark:")
+                 ("failed" ":x:")
+                 ("pending" ":hourglass:")
+                 (_ ":wrench:"))))
+    (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200))))
+
+;;; Advice functions to hook into agent-shell
+
+(defun agent-shell-to-go--on-send-command (orig-fn &rest args)
+  "Advice for agent-shell--send-command. Send user prompt to Slack.
+ORIG-FN is the original function, ARGS are its arguments."
+  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-ts)
+    (let ((prompt (plist-get args :prompt)))
+      (when prompt
+        (agent-shell-to-go--send
+         (agent-shell-to-go--format-user-message prompt)
+         agent-shell-to-go--thread-ts))))
+  ;; Reset message accumulator for new response
+  (setq agent-shell-to-go--current-agent-message nil)
+  (apply orig-fn args))
+
+(defun agent-shell-to-go--on-notification (orig-fn &rest args)
+  "Advice for agent-shell--on-notification. Mirror updates to Slack.
+ORIG-FN is the original function, ARGS are its arguments."
+  (let* ((state (plist-get args :state))
+         (buffer (alist-get :buffer state)))
+    (when (and buffer
+               (buffer-live-p buffer)
+               (buffer-local-value 'agent-shell-to-go-mode buffer))
+      (let* ((notification (plist-get args :notification))
+             (params (alist-get 'params notification))
+             (update (alist-get 'update params))
+             (update-type (alist-get 'sessionUpdate update))
+             (thread-ts (buffer-local-value 'agent-shell-to-go--thread-ts buffer)))
+        (when thread-ts
+          (pcase update-type
+            ("agent_message_chunk"
+             ;; Accumulate chunks, send when complete
+             (let ((text (alist-get 'text (alist-get 'content update))))
+               (with-current-buffer buffer
+                 (setq agent-shell-to-go--current-agent-message
+                       (concat agent-shell-to-go--current-agent-message text)))))
+
+            ("tool_call_update"
+             (let ((status (alist-get 'status update))
+                   (title (or (alist-get 'command (alist-get 'rawInput update))
+                              (alist-get 'title update))))
+               (when (and title (member status '("completed" "failed")))
+                 (agent-shell-to-go--send
+                  (agent-shell-to-go--format-tool-call title status)
+                  thread-ts)))))))))
+  (apply orig-fn args))
+
+(defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
+  "Advice for agent-shell-heartbeat-stop. Flush agent message to Slack.
+ORIG-FN is the original function, ARGS are its arguments."
+  ;; Flush accumulated message before stopping
+  (when (and agent-shell-to-go-mode
+             agent-shell-to-go--thread-ts
+             agent-shell-to-go--current-agent-message
+             (> (length agent-shell-to-go--current-agent-message) 0))
+    (agent-shell-to-go--send
+     (agent-shell-to-go--format-agent-message agent-shell-to-go--current-agent-message)
+     agent-shell-to-go--thread-ts)
+    (setq agent-shell-to-go--current-agent-message nil))
+  (apply orig-fn args))
+
+;;; Polling for Slack replies
+
+(defun agent-shell-to-go--ts> (ts1 ts2)
+  "Return t if TS1 is newer than TS2 (Slack timestamps are decimal strings)."
+  (> (string-to-number ts1) (string-to-number ts2)))
+
+(defun agent-shell-to-go--check-for-replies ()
+  "Check all active Slack threads for new replies and inject into agent-shell."
+  (dolist (buffer agent-shell-to-go--active-buffers)
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and agent-shell-to-go-mode agent-shell-to-go--thread-ts)
+          (condition-case err
+              (let* ((replies (agent-shell-to-go--get-thread-replies
+                               agent-shell-to-go--thread-ts
+                               agent-shell-to-go--last-seen-ts))
+                     (replies-list (append replies nil))  ; Convert vector to list
+                     (bot-user-id (agent-shell-to-go--get-bot-user-id)))
+                (dolist (reply replies-list)
+                  (let ((ts (alist-get 'ts reply))
+                        (user (alist-get 'user reply))
+                        (text (alist-get 'text reply)))
+                    ;; Skip bot's own messages and already-seen messages
+                    (when (and text
+                               (not (equal user bot-user-id))
+                               (or (null agent-shell-to-go--last-seen-ts)
+                                   (agent-shell-to-go--ts> ts agent-shell-to-go--last-seen-ts)))
+                      ;; Inject into agent-shell
+                      (message "agent-shell-to-go: received from Slack: %s" text)
+                      (agent-shell-to-go--inject-message text)
+                      (setq agent-shell-to-go--last-seen-ts ts)))))
+            (error (message "agent-shell-to-go poll error: %s" err))))))))
+
+(defun agent-shell-to-go--inject-message (text)
+  "Inject TEXT from Slack into the current agent-shell buffer."
+  (when (derived-mode-p 'agent-shell-mode)
+    (save-excursion
+      (goto-char (point-max))
+      (insert text))
+    (goto-char (point-max))
+    (call-interactively #'shell-maker-submit)))
+
+(defun agent-shell-to-go--start-polling ()
+  "Start the Slack polling timer."
+  (unless agent-shell-to-go--poll-timer
+    (setq agent-shell-to-go--poll-timer
+          (run-with-timer agent-shell-to-go-poll-interval
+                          agent-shell-to-go-poll-interval
+                          #'agent-shell-to-go--check-for-replies))))
+
+(defun agent-shell-to-go--stop-polling ()
+  "Stop the Slack polling timer if no active buffers."
+  (when (and agent-shell-to-go--poll-timer
+             (null agent-shell-to-go--active-buffers))
+    (cancel-timer agent-shell-to-go--poll-timer)
+    (setq agent-shell-to-go--poll-timer nil)))
+
+;;; Minor mode
+
+(defun agent-shell-to-go--enable ()
+  "Enable Slack mirroring for this buffer."
+  ;; Load credentials from .env if needed
+  (agent-shell-to-go--load-env)
+
+  (unless agent-shell-to-go-bot-token
+    (error "agent-shell-to-go-bot-token not set. See agent-shell-to-go-env-file"))
+  (unless agent-shell-to-go-channel-id
+    (error "agent-shell-to-go-channel-id not set. See agent-shell-to-go-env-file"))
+
+  ;; Start a new Slack thread for this session
+  (setq agent-shell-to-go--thread-ts
+        (agent-shell-to-go--start-thread (buffer-name)))
+  (setq agent-shell-to-go--last-seen-ts agent-shell-to-go--thread-ts)
+
+  ;; Track this buffer
+  (add-to-list 'agent-shell-to-go--active-buffers (current-buffer))
+
+  ;; Start polling
+  (agent-shell-to-go--start-polling)
+
+  ;; Add advice
+  (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
+  (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
+  (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
+
+  (message "agent-shell-to-go: mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
+
+(defun agent-shell-to-go--disable ()
+  "Disable Slack mirroring for this buffer."
+  ;; Send goodbye
+  (when agent-shell-to-go--thread-ts
+    (agent-shell-to-go--send ":wave: Session ended" agent-shell-to-go--thread-ts))
+
+  ;; Untrack this buffer
+  (setq agent-shell-to-go--active-buffers
+        (delete (current-buffer) agent-shell-to-go--active-buffers))
+
+  ;; Stop polling if no more active buffers
+  (agent-shell-to-go--stop-polling)
+
+  ;; Remove advice only if no more active buffers
+  (unless agent-shell-to-go--active-buffers
+    (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
+    (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
+    (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
+
+  (message "agent-shell-to-go: mirroring disabled"))
+
+;;;###autoload
+(define-minor-mode agent-shell-to-go-mode
+  "Mirror agent-shell conversations to Slack.
+Take your AI agent sessions anywhere - chat from your phone!"
+  :lighter " ToGo"
+  :group 'agent-shell-to-go
+  (if agent-shell-to-go-mode
+      (agent-shell-to-go--enable)
+    (agent-shell-to-go--disable)))
+
+;;;###autoload
+(defun agent-shell-to-go-auto-enable ()
+  "Automatically enable Slack mirroring for agent-shell buffers."
+  (when (derived-mode-p 'agent-shell-mode)
+    (agent-shell-to-go-mode 1)))
+
+;;;###autoload
+(defun agent-shell-to-go-setup ()
+  "Set up automatic Slack mirroring for all agent-shell sessions."
+  (add-hook 'agent-shell-mode-hook #'agent-shell-to-go-auto-enable))
+
+(provide 'agent-shell-to-go)
+;;; agent-shell-to-go.el ends here

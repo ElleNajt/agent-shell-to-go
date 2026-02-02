@@ -2,6 +2,10 @@
 
 Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhere. Chat with your AI agents from your phone or any device.
 
+| Emacs | Slack (message from phone) | Slack (follow-up from Emacs) |
+|-------|---------------------------|------------------------------|
+| ![Emacs](screenshot-emacs.png) | ![Slack 1](screenshot-slack-1.png) | ![Slack 2](screenshot-slack-2.png) |
+
 ## Overview
 
 agent-shell-to-go mirrors your agent-shell conversations to external messaging platforms, enabling bidirectional communication. Send messages from your phone, approve permissions on the go, and monitor your AI agents from anywhere.

@@ -253,10 +253,12 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
   "Handle Slack event PAYLOAD."
   (let* ((event (alist-get 'event payload))
          (event-type (alist-get 'type event)))
+    (message "agent-shell-to-go: received event type: %s" event-type)
     (pcase event-type
       ("message"
        (agent-shell-to-go--handle-message-event event))
       ("reaction_added"
+       (message "agent-shell-to-go: reaction event: %s" event)
        (agent-shell-to-go--handle-reaction-event event)))))
 
 (defun agent-shell-to-go--handle-message-event (event)

@@ -316,46 +316,63 @@ Messages are stored as CHANNEL/TIMESTAMP.txt files."
 ;;; Slack API
 
 (defun agent-shell-to-go--api-request (method endpoint &optional data)
-  "Make a Slack API request.
+  "Make a Slack API request using curl.
 METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
-  (let* ((url-request-method method)
-         (url-request-extra-headers
-          `(("Authorization" . ,(concat "Bearer " agent-shell-to-go-bot-token))
-            ("Content-Type" . "application/json; charset=utf-8")))
-         (url-request-data (when data
-                             (string-as-unibyte
-                              (encode-coding-string (json-encode data) 'utf-8))))
-         (url (concat "https://slack.com/api/" endpoint)))
-    (with-current-buffer (url-retrieve-synchronously url t)
+  (let* ((url (concat "https://slack.com/api/" endpoint))
+         (args (list "-s" "-X" method
+                     "-H" (concat "Authorization: Bearer " agent-shell-to-go-bot-token)
+                     "-H" "Content-Type: application/json; charset=utf-8")))
+    (when data
+      (setq args (append args (list "-d" (encode-coding-string (json-encode data) 'utf-8)))))
+    (setq args (append args (list url)))
+    (with-temp-buffer
+      (apply #'call-process "curl" nil t nil args)
       (goto-char (point-min))
-      (re-search-forward "\n\n")
-      (let ((response (json-read)))
-        (kill-buffer)
-        response))))
+      (json-read))))
 
 (defun agent-shell-to-go--send (text &optional thread-ts channel-id truncate)
   "Send TEXT to Slack, optionally in THREAD-TS thread.
 CHANNEL-ID overrides the buffer-local or default channel.
 If TRUNCATE is non-nil, truncate long messages and store full text for 👀 expansion."
-  (let* ((channel (or channel-id
-                      agent-shell-to-go--channel-id
-                      agent-shell-to-go-channel-id))
-         (clean-text (agent-shell-to-go--strip-non-ascii text))
-         (truncated-text (if truncate
-                             (agent-shell-to-go--truncate-message clean-text 500)
-                           clean-text))
-         (was-truncated (and truncate (not (equal clean-text truncated-text))))
-         (data `((channel . ,channel)
-                 (text . ,truncated-text))))
-    (when thread-ts
-      (push `(thread_ts . ,thread-ts) data))
-    (let ((response (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
-      ;; If truncated, save full text for expansion
-      (when was-truncated
-        (let ((msg-ts (alist-get 'ts response)))
-          (when msg-ts
-            (agent-shell-to-go--save-truncated-message channel msg-ts clean-text))))
-      response)))
+  (condition-case err
+      (let* ((channel (or channel-id
+                          agent-shell-to-go--channel-id
+                          agent-shell-to-go-channel-id))
+             (clean-text text)
+             (truncated-text (if truncate
+                                 (agent-shell-to-go--truncate-message clean-text 500)
+                               clean-text))
+             (was-truncated (and truncate (not (equal clean-text truncated-text))))
+             (data `((channel . ,channel)
+                     (text . ,truncated-text))))
+        (when thread-ts
+          (push `(thread_ts . ,thread-ts) data))
+        (let ((response (agent-shell-to-go--api-request "POST" "chat.postMessage" data)))
+          ;; If truncated, save full text for expansion
+          (when was-truncated
+            (let ((msg-ts (alist-get 'ts response)))
+              (when msg-ts
+                (agent-shell-to-go--save-truncated-message channel msg-ts clean-text))))
+          response))
+    (error
+     (agent-shell-to-go--debug "send error: %s, retrying with ASCII-only" err)
+     ;; Fallback: strip non-ASCII and try again
+     (let* ((channel (or channel-id
+                         agent-shell-to-go--channel-id
+                         agent-shell-to-go-channel-id))
+            (safe-text (agent-shell-to-go--strip-non-ascii text))
+            (truncated-text (if truncate
+                                (agent-shell-to-go--truncate-message safe-text 500)
+                              safe-text))
+            (data `((channel . ,channel)
+                    (text . ,truncated-text))))
+       (when thread-ts
+         (push `(thread_ts . ,thread-ts) data))
+       (condition-case nil
+           (agent-shell-to-go--api-request "POST" "chat.postMessage" data)
+         (error
+          (agent-shell-to-go--debug "send failed even with ASCII fallback")
+          nil))))))
 
 (defun agent-shell-to-go--get-reactions (msg-ts)
   "Get reactions on message MSG-TS."

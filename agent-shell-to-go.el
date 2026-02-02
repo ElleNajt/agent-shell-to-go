@@ -193,14 +193,19 @@ METHOD is GET or POST, ENDPOINT is the API endpoint, DATA is the payload."
   (format ":robot_face: *Agent*\n%s"
           (agent-shell-to-go--truncate-message text)))
 
-(defun agent-shell-to-go--format-tool-call (title status)
-  "Format tool call with TITLE and STATUS for Slack."
+(defun agent-shell-to-go--format-tool-call (title status &optional output)
+  "Format tool call with TITLE, STATUS, and optional OUTPUT for Slack."
   (let ((emoji (pcase status
                  ("completed" ":white_check_mark:")
                  ("failed" ":x:")
                  ("pending" ":hourglass:")
                  (_ ":wrench:"))))
-    (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200))))
+    (if (and output (not (string-empty-p output)))
+        (format "%s `%s`\n```\n%s\n```"
+                emoji
+                (agent-shell-to-go--truncate-message title 200)
+                (agent-shell-to-go--truncate-message output 1500))
+      (format "%s `%s`" emoji (agent-shell-to-go--truncate-message title 200)))))
 
 ;;; WebSocket / Socket Mode
 
@@ -411,15 +416,29 @@ ORIG-FN is the original function, ARGS are its arguments."
                (with-current-buffer buffer
                  (setq agent-shell-to-go--current-agent-message
                        (concat agent-shell-to-go--current-agent-message text)))))
-            ("tool_call_update"
-             (let ((status (alist-get 'status update))
-                   (title (or (alist-get 'command (alist-get 'rawInput update))
-                              (alist-get 'title update))))
-               (when (and title (member status '("completed" "failed")))
+            ("tool_call"
+             ;; Tool call starting - show the command
+             (let* ((title (alist-get 'title update))
+                    (raw-input (alist-get 'rawInput update))
+                    (command (alist-get 'command raw-input))
+                    (display-title (or command title)))
+               (when display-title
                  (agent-shell-to-go--send
-                  (agent-shell-to-go--format-tool-call title status)
-                  thread-ts)))))))))
-  (apply orig-fn args))
+                  (format ":hourglass: `%s`" 
+                          (agent-shell-to-go--truncate-message display-title 500))
+                  thread-ts))))
+            ("tool_call_update"
+             ;; Tool call completed - show output
+             (let* ((status (alist-get 'status update))
+                    (output (or (alist-get 'rawOutput update)
+                                (alist-get 'output update))))
+               (when (and (member status '("completed" "failed")) output)
+                 (agent-shell-to-go--send
+                  (format "%s\n```\n%s\n```"
+                          (if (equal status "completed") ":white_check_mark:" ":x:")
+                          (agent-shell-to-go--truncate-message output 1500))
+                  thread-ts))))))))
+    (apply orig-fn args)))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)
   "Advice for agent-shell-heartbeat-stop. Flush agent message to Slack.
@@ -486,8 +505,14 @@ ORIG-FN is the original function, ARGS are its arguments."
                 "`!yolo` - Bypass permissions\n"
                 "`!safe` - Accept edits mode\n"
                 "`!plan` - Plan mode\n"
-                "`!mode` - Show current mode")
+                "`!mode` - Show current mode\n"
+                "`!stop` - Interrupt the agent")
         thread-ts)
+       t)
+      ("!stop"
+       (with-current-buffer buffer
+         (agent-shell-interrupt))
+       (agent-shell-to-go--send ":stop_sign: Agent interrupted" thread-ts)
        t)
       (_ nil))))
 

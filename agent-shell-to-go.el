@@ -487,6 +487,8 @@ Optionally also match CHANNEL-ID if provided."
          (subtype (alist-get 'subtype event))
          (bot-id (alist-get 'bot_id event))
          (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
+    (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s"
+                              thread-ts channel text buffer)
     ;; Only handle real user messages in threads we're tracking
     (when (and buffer
                text
@@ -495,7 +497,9 @@ Optionally also match CHANNEL-ID if provided."
                (not (equal user (agent-shell-to-go--get-bot-user-id))))
       (with-current-buffer buffer
         (if (string-prefix-p "!" text)
-            (agent-shell-to-go--handle-command text buffer thread-ts)
+            (progn
+              (agent-shell-to-go--debug "handling command: %s" text)
+              (agent-shell-to-go--handle-command text buffer thread-ts))
           (agent-shell-to-go--debug "received from Slack: %s" text)
           (agent-shell-to-go--inject-message text))))))
 
@@ -950,9 +954,13 @@ ORIG-FN is the original function, ARGS are its arguments."
         thread-ts)
        t)
       ("!stop"
-       (with-current-buffer buffer
-         (agent-shell-interrupt))
-       (agent-shell-to-go--send ":stop_sign: Agent interrupted" thread-ts)
+       (condition-case err
+           (with-current-buffer buffer
+             (agent-shell-interrupt t)  ; force=t to skip y-or-n-p prompt
+             (agent-shell-to-go--send ":stop_sign: Agent interrupted" thread-ts))
+         (error
+          (agent-shell-to-go--debug "!stop error: %s" err)
+          (agent-shell-to-go--send (format ":x: Stop failed: %s" err) thread-ts)))
        t)
       (_ nil))))
 

@@ -1307,11 +1307,11 @@ ORIG-FN is the original function, ARGS are its arguments."
   (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-start (orig-fn &rest args)
-  "Advice for agent-shell-heartbeat-start. Send thinking indicator to Slack.
+  "Advice for agent-shell-heartbeat-start. Send processing indicator to Slack.
 ORIG-FN is the original function, ARGS are its arguments."
   (when (and agent-shell-to-go-mode
              agent-shell-to-go--thread-ts)
-    (agent-shell-to-go--send ":thinking_face: _Thinking..._" agent-shell-to-go--thread-ts))
+    (agent-shell-to-go--send ":hourglass_flowing_sand: _Processing..._" agent-shell-to-go--thread-ts))
   (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)

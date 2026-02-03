@@ -32,7 +32,7 @@ Planned/possible integrations:
 
 ## Security
 
-**Secure by default:** No one can interact with your agents until you explicitly set an allowlist.
+No one can interact with your agents until you explicitly set an allowlist. Additionally, it is recommended to limit workspace membership to just you and your agent.
 
 ### Authorized Users (required)
 
@@ -64,7 +64,7 @@ Anyone authorized can:
 
 ### Additional Recommendations
 
-- Use private channels with restricted membership
+- **Limit workspace membership** - Only invite trusted people to your Slack workspace. The allowlist protects you, but defense in depth is wise.
 - Keep your Slack tokens secure (treat them like SSH keys)
 - Consider running agents in containers for additional isolation
 

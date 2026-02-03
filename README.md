@@ -267,6 +267,21 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 
 ## Troubleshooting
 
+### WebSocket keeps disconnecting (reconnect loop)
+
+If you see repeated `WebSocket closed` / `WebSocket disconnect requested, reconnecting...` messages, Slack is actively rejecting the connection. Common causes:
+
+1. **Events not enabled** - Go to your Slack app settings → "Event Subscriptions" → make sure "Enable Events" is toggled ON
+2. **Missing event subscriptions** - Under "Subscribe to bot events", verify you have `message.channels` and `reaction_added`
+3. **App token expired** - Regenerate the app-level token in "Basic Information" → "App-Level Tokens"
+
+To debug, enable logging:
+```elisp
+(setq agent-shell-to-go-debug t)
+```
+
+Then check `*Messages*` buffer for `agent-shell-to-go:` prefixed logs.
+
 ### Agent gets stuck when writing to new directories
 
 If your agent gets stuck when trying to create a file in a directory that doesn't exist, Emacs may be prompting for confirmation. Doom Emacs has a `doom-create-missing-directories-h` hook that prompts `y-or-n-p` before creating directories.

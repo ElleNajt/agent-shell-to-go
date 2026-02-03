@@ -29,7 +29,7 @@
 ;;      (setq agent-shell-to-go-bot-token "xoxb-...")
 ;;      (setq agent-shell-to-go-channel-id "C...")
 ;;      (setq agent-shell-to-go-app-token "xapp-...")
-;;      (setq agent-shell-to-go-authorized-users '("U..."))  ; recommended
+;;      (setq agent-shell-to-go-authorized-users '("U..."))  ; REQUIRED
 ;;      (agent-shell-to-go-setup))
 ;;
 ;; See README.md for full setup instructions including:
@@ -105,7 +105,8 @@ Override this if you have a custom agent-shell starter function."
 
 (defcustom agent-shell-to-go-authorized-users nil
   "List of Slack user IDs authorized to interact with agents.
-If nil, ALL channel members can control agents (UNSAFE for shared channels).
+REQUIRED: You must set this for Slack integration to work.
+If nil, NO ONE can interact (secure by default).
 Find your user ID in Slack: click your profile -> three dots -> Copy member ID."
   :type '(repeat string)
   :group 'agent-shell-to-go)
@@ -118,10 +119,10 @@ Find your user ID in Slack: click your profile -> three dots -> Copy member ID."
 (defun agent-shell-to-go--authorized-p (user-id)
   "Return non-nil if USER-ID is authorized to interact with agents.
 USER-ID is a Slack user ID (e.g., \"U01234567\").
-If `agent-shell-to-go-authorized-users' is nil, all users are authorized.
+If `agent-shell-to-go-authorized-users' is nil, NO ONE is authorized (secure by default).
 Note: This is Slack-specific; other integrations will need their own auth."
-  (or (null agent-shell-to-go-authorized-users)
-      (member user-id agent-shell-to-go-authorized-users)))
+  (and agent-shell-to-go-authorized-users
+       (member user-id agent-shell-to-go-authorized-users)))
 
 (defun agent-shell-to-go--strip-non-ascii (text)
   "Strip non-ASCII characters from TEXT, replacing them with '?'."
@@ -716,22 +717,28 @@ Optionally also match CHANNEL-ID if provided."
        (agent-shell-to-go--websocket-reconnect)))))
 
 (defun agent-shell-to-go--handle-event (payload)
-  "Handle Slack event PAYLOAD."
+  "Handle Slack event PAYLOAD.
+All events are gated on `agent-shell-to-go-authorized-users'."
   (let* ((event (alist-get 'event payload))
-         (event-type (alist-get 'type event)))
-    (agent-shell-to-go--debug "received event type: %s" event-type)
-    (pcase event-type
-      ("message"
-       (agent-shell-to-go--handle-message-event event))
-      ("reaction_added"
-       (agent-shell-to-go--debug "reaction event: %s" event)
-       (agent-shell-to-go--handle-reaction-event event))
-      ("reaction_removed"
-       (agent-shell-to-go--debug "reaction removed event: %s" event)
-       (agent-shell-to-go--handle-reaction-removed-event event)))))
+         (event-type (alist-get 'type event))
+         (user (alist-get 'user event)))
+    (agent-shell-to-go--debug "received event type: %s from user: %s" event-type user)
+    ;; Check authorization for all events
+    (if (not (agent-shell-to-go--authorized-p user))
+        (agent-shell-to-go--debug "unauthorized user %s, ignoring %s event" user event-type)
+      (pcase event-type
+        ("message"
+         (agent-shell-to-go--handle-message-event event))
+        ("reaction_added"
+         (agent-shell-to-go--debug "reaction event: %s" event)
+         (agent-shell-to-go--handle-reaction-event event))
+        ("reaction_removed"
+         (agent-shell-to-go--debug "reaction removed event: %s" event)
+         (agent-shell-to-go--handle-reaction-removed-event event))))))
 
 (defun agent-shell-to-go--handle-message-event (event)
-  "Handle a message EVENT from Slack."
+  "Handle a message EVENT from Slack.
+Authorization is checked upstream in `agent-shell-to-go--handle-event'."
   (let* ((thread-ts (alist-get 'thread_ts event))
          (channel (alist-get 'channel event))
          (user (alist-get 'user event))
@@ -739,24 +746,21 @@ Optionally also match CHANNEL-ID if provided."
          (subtype (alist-get 'subtype event))
          (bot-id (alist-get 'bot_id event))
          (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
-    (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s user=%s"
-                              thread-ts channel text buffer user)
+    (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s"
+                              thread-ts channel text buffer)
     ;; Only handle real user messages in threads we're tracking
     (when (and buffer
                text
                (not subtype)
                (not bot-id)
                (not (equal user (agent-shell-to-go--get-bot-user-id))))
-      ;; Check authorization
-      (if (not (agent-shell-to-go--authorized-p user))
-          (agent-shell-to-go--debug "unauthorized user %s, ignoring message" user)
-        (with-current-buffer buffer
-          (if (string-prefix-p "!" text)
-              (progn
-                (agent-shell-to-go--debug "handling command: %s" text)
-                (agent-shell-to-go--handle-command text buffer thread-ts))
-            (agent-shell-to-go--debug "received from Slack: %s" text)
-            (agent-shell-to-go--inject-message text)))))))
+      (with-current-buffer buffer
+        (if (string-prefix-p "!" text)
+            (progn
+              (agent-shell-to-go--debug "handling command: %s" text)
+              (agent-shell-to-go--handle-command text buffer thread-ts))
+          (agent-shell-to-go--debug "received from Slack: %s" text)
+          (agent-shell-to-go--inject-message text))))))
 
 (defun agent-shell-to-go--hidden-message-path (channel ts)
   "Return the file path for storing hidden message content.
@@ -1044,50 +1048,47 @@ Creates an org TODO file with the message content."
       (agent-shell-to-go--collapse-message channel msg-ts))))
 
 (defun agent-shell-to-go--handle-reaction-event (event)
-  "Handle a reaction EVENT from Slack."
+  "Handle a reaction EVENT from Slack.
+Authorization is checked upstream in `agent-shell-to-go--handle-event'."
   (let* ((item (alist-get 'item event))
          (msg-ts (alist-get 'ts item))
          (channel (alist-get 'channel item))
          (reaction (alist-get 'reaction event))
-         (user (alist-get 'user event))
          (pending (assoc msg-ts agent-shell-to-go--pending-permissions)))
-    ;; Check authorization for all reaction handling
-    (if (not (agent-shell-to-go--authorized-p user))
-        (agent-shell-to-go--debug "unauthorized user %s, ignoring reaction %s" user reaction)
-      ;; Check for hide reactions first
-      (when (member reaction agent-shell-to-go--hide-reactions)
-        (agent-shell-to-go--hide-message channel msg-ts))
-      ;; Check for expand reactions (show full truncated message)
-      (when (member reaction agent-shell-to-go--expand-reactions)
-        (agent-shell-to-go--expand-message channel msg-ts))
-      ;; Check for heart reactions (send appreciation to agent)
-      (when (member reaction agent-shell-to-go--heart-reactions)
-        (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
-        (agent-shell-to-go--handle-heart-reaction channel msg-ts))
-      ;; Check for bookmark reactions (create TODO)
-      (when (member reaction agent-shell-to-go--bookmark-reactions)
-        (agent-shell-to-go--debug "bookmark reaction: %s on %s" reaction msg-ts)
-        (agent-shell-to-go--handle-bookmark-reaction channel msg-ts))
-      ;; Then check for permission reactions
-      (when pending
-        (let* ((info (cdr pending))
-               (request-id (plist-get info :request-id))
-               (buffer (plist-get info :buffer))
-               (options (plist-get info :options))
-               (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
-          (when (and action buffer (buffer-live-p buffer))
-            (let ((option-id (agent-shell-to-go--find-option-id options action)))
-              (when option-id
-                (with-current-buffer buffer
-                  (let ((state agent-shell--state))
-                    (agent-shell--send-permission-response
-                     :client (alist-get :client state)
-                     :request-id request-id
-                     :option-id option-id
-                     :state state)))
-                ;; Remove from pending
-                (setq agent-shell-to-go--pending-permissions
-                      (assq-delete-all msg-ts agent-shell-to-go--pending-permissions))))))))))
+    ;; Check for hide reactions first
+    (when (member reaction agent-shell-to-go--hide-reactions)
+      (agent-shell-to-go--hide-message channel msg-ts))
+    ;; Check for expand reactions (show full truncated message)
+    (when (member reaction agent-shell-to-go--expand-reactions)
+      (agent-shell-to-go--expand-message channel msg-ts))
+    ;; Check for heart reactions (send appreciation to agent)
+    (when (member reaction agent-shell-to-go--heart-reactions)
+      (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
+      (agent-shell-to-go--handle-heart-reaction channel msg-ts))
+    ;; Check for bookmark reactions (create TODO)
+    (when (member reaction agent-shell-to-go--bookmark-reactions)
+      (agent-shell-to-go--debug "bookmark reaction: %s on %s" reaction msg-ts)
+      (agent-shell-to-go--handle-bookmark-reaction channel msg-ts))
+    ;; Then check for permission reactions
+    (when pending
+      (let* ((info (cdr pending))
+             (request-id (plist-get info :request-id))
+             (buffer (plist-get info :buffer))
+             (options (plist-get info :options))
+             (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
+        (when (and action buffer (buffer-live-p buffer))
+          (let ((option-id (agent-shell-to-go--find-option-id options action)))
+            (when option-id
+              (with-current-buffer buffer
+                (let ((state agent-shell--state))
+                  (agent-shell--send-permission-response
+                   :client (alist-get :client state)
+                   :request-id request-id
+                   :option-id option-id
+                   :state state)))
+              ;; Remove from pending
+              (setq agent-shell-to-go--pending-permissions
+                    (assq-delete-all msg-ts agent-shell-to-go--pending-permissions)))))))))
 
 (defun agent-shell-to-go--start-agent-in-folder (folder &optional use-container)
   "Start a new agent in FOLDER. If USE-CONTAINER is non-nil, pass prefix arg."

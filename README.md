@@ -32,29 +32,35 @@ Planned/possible integrations:
 
 ## Security
 
-**By default, anyone with access to your messaging channel can control your agent-shell sessions.** This includes:
-- Sending prompts to Claude Code running on your machine
-- Approving permission requests (file edits, command execution, etc.)
-- Starting new agent sessions via slash commands
+**Secure by default:** No one can interact with your agents until you explicitly set an allowlist.
 
-### Authorized Users (recommended)
+### Authorized Users (required)
 
-Restrict who can interact with your agents by setting an allowlist of Slack user IDs:
+You **must** set an allowlist of Slack user IDs who can interact with your agents:
 
 ```elisp
-;; Only allow specific users to control agents
+;; Allow specific users to control agents
 (setq agent-shell-to-go-authorized-users '("U01234567" "U89ABCDEF"))
 
 ;; Or if you already have user-id configured, reuse it:
 (setq agent-shell-to-go-authorized-users (list agent-shell-to-go-user-id))
 ```
 
-When set, unauthorized users:
+Without this setting, all Slack interactions are ignored.
+
+Unauthorized users:
 - Cannot send messages to agent threads (silently ignored)
 - Cannot use reactions to approve permissions or control messages
 - Cannot use slash commands (get an ephemeral "not authorized" message)
 
 To find your Slack user ID: click your profile → three dots → "Copy member ID".
+
+### Why This Matters
+
+Anyone authorized can:
+- Send prompts to Claude Code running on your machine
+- Approve permission requests (file edits, command execution, etc.)
+- Start new agent sessions via slash commands
 
 ### Additional Recommendations
 

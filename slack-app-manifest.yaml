@@ -16,6 +16,10 @@ features:
       description: Start new agent in a container
       usage_hint: "[folder path]"
       should_escape: false
+    - command: /new-project
+      description: Create a new project and start an agent
+      usage_hint: "<project-name>"
+      should_escape: false
     - command: /projects
       description: List open projects from Emacs
       should_escape: false
@@ -23,11 +27,13 @@ features:
 oauth_config:
   scopes:
     bot:
-      - chat:write
       - channels:history
       - channels:read
       - channels:write
+      - chat:write
       - files:write
+      - groups:history
+      - groups:read
       - groups:write
       - reactions:read
 

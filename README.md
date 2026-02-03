@@ -65,6 +65,7 @@ Anyone authorized can:
 ### Additional Recommendations
 
 - **Limit workspace membership** - Only invite trusted people to your Slack workspace. The allowlist protects you, but defense in depth is wise.
+- **Opt out of Slack's ML training** - Slack uses customer data for ML features like emoji/channel recommendations. To opt out, Workspace Owners can email `feedback@slack.com` with subject "Slack Global model opt-out request" and your workspace URL. See [Slack's privacy principles](https://slack.com/trust/data-management/privacy-principles).
 - Keep your Slack tokens secure (treat them like SSH keys)
 - Consider running agents in containers for additional isolation
 

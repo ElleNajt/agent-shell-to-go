@@ -1786,6 +1786,70 @@ Take your AI agent sessions anywhere - chat from your phone!"
   (add-hook 'agent-shell-mode-hook #'agent-shell-to-go-auto-enable))
 
 ;;;###autoload
+(defun agent-shell-to-go-reconnect-buffer (&optional buffer)
+  "Reconnect BUFFER (or current buffer) to Slack with a fresh thread.
+Always creates a new Slack thread to ensure clean state.
+Use this when a buffer's Slack connection is broken."
+  (interactive)
+  (let ((buf (or buffer (current-buffer))))
+    (unless (buffer-live-p buf)
+      (user-error "Buffer is not live"))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'agent-shell-mode)
+        (user-error "Not an agent-shell buffer"))
+      ;; Load credentials if needed
+      (agent-shell-to-go--load-env)
+      (agent-shell-to-go--load-channels)
+      ;; Get or create channel
+      (setq agent-shell-to-go--channel-id
+            (agent-shell-to-go--get-or-create-project-channel))
+      ;; Always create a fresh thread
+      (setq agent-shell-to-go--thread-ts
+            (agent-shell-to-go--start-thread (buffer-name)))
+      ;; Ensure buffer is tracked
+      (unless (memq buf agent-shell-to-go--active-buffers)
+        (add-to-list 'agent-shell-to-go--active-buffers buf))
+      ;; Ensure WebSocket is connected
+      (unless (and agent-shell-to-go--websocket
+                   (websocket-openp agent-shell-to-go--websocket))
+        (agent-shell-to-go--websocket-connect))
+      ;; Restart file watcher (stops existing one if any)
+      (agent-shell-to-go--start-file-watcher)
+      ;; Ensure advice is set up
+      (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
+      (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
+      (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
+      (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
+      ;; Ensure kill hook
+      (add-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill nil t)
+      ;; Enable the mode if not already
+      (unless agent-shell-to-go-mode
+        (setq agent-shell-to-go-mode t))
+      (message "Reconnected %s to Slack (new thread)" (buffer-name buf)))))
+
+;;;###autoload
+(defun agent-shell-to-go-reconnect-all ()
+  "Reconnect all agent-shell buffers to Slack.
+Finds all buffers in `agent-shell-mode' and ensures they're connected."
+  (interactive)
+  (let ((reconnected 0)
+        (agent-buffers (cl-remove-if-not
+                        (lambda (buf)
+                          (and (buffer-live-p buf)
+                               (with-current-buffer buf
+                                 (derived-mode-p 'agent-shell-mode))))
+                        (buffer-list))))
+    (dolist (buf agent-buffers)
+      (condition-case err
+          (progn
+            (agent-shell-to-go-reconnect-buffer buf)
+            (cl-incf reconnected))
+        (error
+         (message "Failed to reconnect %s: %s" (buffer-name buf) err))))
+    (message "Reconnected %d/%d agent-shell buffers"
+             reconnected (length agent-buffers))))
+
+;;;###autoload
 (defun agent-shell-to-go-send-image (file-path &optional comment buffer)
   "Send image at FILE-PATH to an agent-shell Slack thread.
 With optional COMMENT to display with the image.

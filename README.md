@@ -345,6 +345,8 @@ To auto-create directories without prompting, add this to your config:
 - [x] Bookmarks - bookmark reaction creates org-mode TODO scheduled for today
 - [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically
+- [x] Message queuing - messages sent while agent is busy are queued automatically
+- [ ] Cloudflare Worker relay - Slack's Socket Mode requires your laptop to be online; when it sleeps or loses WiFi, Slack accumulates delivery failures and eventually disables the app. A Cloudflare Worker relay would maintain the Slack Socket Mode connection 24/7, queue messages while you're offline, and forward them when Emacs reconnects.
 - [ ] Meta-Claude channel - a `#claude-meta` channel with an always-on Claude that knows about active sessions, can summarize recent activity, route tasks to the right project, and orchestrate across sessions
 - [ ] Matrix integration
 - [ ] Discord integration

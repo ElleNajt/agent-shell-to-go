@@ -1552,8 +1552,35 @@ ORIG-FN is the original function, ARGS are its arguments."
                 "`!mode` - Show current mode\n"
                 "`!stop` - Interrupt the agent\n"
                 "`!restart` - Kill and restart agent with transcript\n"
+                "`!queue` - Show pending queued messages\n"
+                "`!clearqueue` - Clear all pending queued messages\n"
                 "`!latest` - Jump to bottom of thread")
         thread-ts)
+       t)
+      ("!queue"
+       (with-current-buffer buffer
+         (let ((pending (map-elt agent-shell--state :pending-requests)))
+           (if (seq-empty-p pending)
+               (agent-shell-to-go--send ":inbox_tray: No pending requests" thread-ts)
+             (agent-shell-to-go--send
+              (format ":inbox_tray: *Pending requests (%d):*\n%s"
+                      (length pending)
+                      (mapconcat
+                       (lambda (req)
+                         (format "• %s"
+                                 (agent-shell-to-go--truncate-message req 80)))
+                       pending
+                       "\n"))
+              thread-ts))))
+       t)
+      ("!clearqueue"
+       (with-current-buffer buffer
+         (let ((count (length (map-elt agent-shell--state :pending-requests))))
+           (map-put! agent-shell--state :pending-requests nil)
+           (agent-shell-to-go--send
+            (format ":wastebasket: Cleared %d pending request%s"
+                    count (if (= count 1) "" "s"))
+            thread-ts)))
        t)
       ("!latest"
        (agent-shell-to-go--send ":point_down:" thread-ts)
@@ -1643,15 +1670,25 @@ ORIG-FN is the original function, ARGS are its arguments."
       (_ nil))))
 
 (defun agent-shell-to-go--inject-message (text)
-  "Inject TEXT from Slack into the current agent-shell buffer."
+  "Inject TEXT from Slack into the current agent-shell buffer.
+If the shell is busy, queue the message for later processing."
   (when (derived-mode-p 'agent-shell-mode)
-    ;; Set flag - it will be cleared by the send-command advice after it skips posting
-    (setq agent-shell-to-go--from-slack t)
-    (save-excursion
+    (if (shell-maker-busy)
+        ;; Shell is busy - queue the request
+        (progn
+          (agent-shell--enqueue-request :prompt text)
+          (agent-shell-to-go--send
+           (format ":hourglass: _Queued: %s_"
+                   (agent-shell-to-go--truncate-message text 100))
+           agent-shell-to-go--thread-ts))
+      ;; Shell is ready - inject immediately
+      ;; Set flag - it will be cleared by the send-command advice after it skips posting
+      (setq agent-shell-to-go--from-slack t)
+      (save-excursion
+        (goto-char (point-max))
+        (insert text))
       (goto-char (point-max))
-      (insert text))
-    (goto-char (point-max))
-    (call-interactively #'shell-maker-submit)))
+      (call-interactively #'shell-maker-submit))))
 
 ;;; Minor mode
 

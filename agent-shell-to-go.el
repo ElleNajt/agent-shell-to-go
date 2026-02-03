@@ -721,20 +721,25 @@ Optionally also match CHANNEL-ID if provided."
 All events are gated on `agent-shell-to-go-authorized-users'."
   (let* ((event (alist-get 'event payload))
          (event-type (alist-get 'type event))
-         (user (alist-get 'user event)))
-    (agent-shell-to-go--debug "received event type: %s from user: %s" event-type user)
-    ;; Check authorization for all events
-    (if (not (agent-shell-to-go--authorized-p user))
-        (agent-shell-to-go--debug "unauthorized user %s, ignoring %s event" user event-type)
-      (pcase event-type
-        ("message"
-         (agent-shell-to-go--handle-message-event event))
-        ("reaction_added"
-         (agent-shell-to-go--debug "reaction event: %s" event)
-         (agent-shell-to-go--handle-reaction-event event))
-        ("reaction_removed"
-         (agent-shell-to-go--debug "reaction removed event: %s" event)
-         (agent-shell-to-go--handle-reaction-removed-event event))))))
+         (user (alist-get 'user event))
+         (bot-id (alist-get 'bot_id event)))
+    ;; Skip bot messages silently (they'll be ignored anyway)
+    ;; NOTE: This skips ALL bot messages. If we want agents to message each other
+    ;; in the future, we'd need to allowlist specific bot IDs here instead.
+    (unless bot-id
+      (agent-shell-to-go--debug "received event type: %s from user: %s" event-type user)
+      ;; Check authorization for all events
+      (if (not (agent-shell-to-go--authorized-p user))
+          (agent-shell-to-go--debug "unauthorized user %s, ignoring %s event" user event-type)
+        (pcase event-type
+          ("message"
+           (agent-shell-to-go--handle-message-event event))
+          ("reaction_added"
+           (agent-shell-to-go--debug "reaction event: %s" event)
+           (agent-shell-to-go--handle-reaction-event event))
+          ("reaction_removed"
+           (agent-shell-to-go--debug "reaction removed event: %s" event)
+           (agent-shell-to-go--handle-reaction-removed-event event)))))))
 
 (defun agent-shell-to-go--handle-message-event (event)
   "Handle a message EVENT from Slack.

@@ -323,6 +323,18 @@ To debug, enable logging:
 
 Then check `*Messages*` buffer for `agent-shell-to-go:` prefixed logs.
 
+### Slack disabled the app / events not arriving
+
+If Slack disables your app (you'll get an email), or if events stop arriving after re-enabling:
+
+1. Go to Slack app settings → "Event Subscriptions" → re-enable events
+2. **Reconnect the websocket in Emacs**:
+   ```elisp
+   (agent-shell-to-go--websocket-connect)
+   ```
+
+The existing websocket connection becomes stale when Slack disables/re-enables events - you need to establish a fresh connection.
+
 ### Agent gets stuck when writing to new directories
 
 If your agent gets stuck when trying to create a file in a directory that doesn't exist, Emacs may be prompting for confirmation. Doom Emacs has a `doom-create-missing-directories-h` hook that prompts `y-or-n-p` before creating directories.

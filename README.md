@@ -30,14 +30,37 @@ Planned/possible integrations:
 - **Image uploads** - images created anywhere in the project are automatically uploaded to Slack (requires `fswatch`)
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
-## Security Warning
+## Security
 
-**Anyone with access to your messaging channel can control your agent-shell sessions.** This includes:
+**By default, anyone with access to your messaging channel can control your agent-shell sessions.** This includes:
 - Sending prompts to Claude Code running on your machine
 - Approving permission requests (file edits, command execution, etc.)
 - Starting new agent sessions via slash commands
 
-This is powerful but risky. Be mindful of who has access to your channel. Consider using a private channel with restricted membership.
+### Authorized Users (recommended)
+
+Restrict who can interact with your agents by setting an allowlist of Slack user IDs:
+
+```elisp
+;; Only allow specific users to control agents
+(setq agent-shell-to-go-authorized-users '("U01234567" "U89ABCDEF"))
+
+;; Or if you already have user-id configured, reuse it:
+(setq agent-shell-to-go-authorized-users (list agent-shell-to-go-user-id))
+```
+
+When set, unauthorized users:
+- Cannot send messages to agent threads (silently ignored)
+- Cannot use reactions to approve permissions or control messages
+- Cannot use slash commands (get an ephemeral "not authorized" message)
+
+To find your Slack user ID: click your profile → three dots → "Copy member ID".
+
+### Additional Recommendations
+
+- Use private channels with restricted membership
+- Keep your Slack tokens secure (treat them like SSH keys)
+- Consider running agents in containers for additional isolation
 
 ## Slack Setup
 
@@ -93,6 +116,7 @@ Skip to [Configure credentials](#2-configure-credentials).
    - Add these events:
      - `message.channels` - receive messages in channels
      - `reaction_added` - receive emoji reactions
+     - `reaction_removed` - receive reaction removals (for unhide/re-truncate)
    - Click "Save Changes"
 
 5. **Add Slash Commands**
@@ -272,7 +296,7 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 If you see repeated `WebSocket closed` / `WebSocket disconnect requested, reconnecting...` messages, Slack is actively rejecting the connection. Common causes:
 
 1. **Events not enabled** - Go to your Slack app settings → "Event Subscriptions" → make sure "Enable Events" is toggled ON
-2. **Missing event subscriptions** - Under "Subscribe to bot events", verify you have `message.channels` and `reaction_added`
+2. **Missing event subscriptions** - Under "Subscribe to bot events", verify you have `message.channels`, `reaction_added`, and `reaction_removed`
 3. **App token expired** - Regenerate the app-level token in "Basic Information" → "App-Level Tokens"
 
 To debug, enable logging:

@@ -22,21 +22,20 @@
 ;; - Real-time via Slack Socket Mode (WebSocket)
 ;; - Works with any agent-shell agent (Claude, Gemini, etc.)
 ;;
-;; Setup:
-;; 1. Create a Slack app with:
-;;    - Bot token scopes: chat:write, channels:history, channels:read, reactions:read
-;;    - Enable Socket Mode and get an app-level token (xapp-...)
-;;
-;; 2. Create ~/.doom.d/.env:
-;;    SLACK_BOT_TOKEN=xoxb-your-token
-;;    SLACK_CHANNEL_ID=C0123456789
-;;    SLACK_APP_TOKEN=xapp-your-app-token
-;;
-;; 3. Add to your config:
+;; Quick start:
 ;;    (use-package agent-shell-to-go
 ;;      :after agent-shell
 ;;      :config
+;;      (setq agent-shell-to-go-bot-token "xoxb-...")
+;;      (setq agent-shell-to-go-channel-id "C...")
+;;      (setq agent-shell-to-go-app-token "xapp-...")
+;;      (setq agent-shell-to-go-authorized-users '("U..."))  ; recommended
 ;;      (agent-shell-to-go-setup))
+;;
+;; See README.md for full setup instructions including:
+;; - Slack app creation (with manifest for quick setup)
+;; - Secure credential storage (pass, macOS Keychain)
+;; - Security configuration (authorized users allowlist)
 
 ;;; Code:
 
@@ -104,10 +103,25 @@ Override this if you have a custom agent-shell starter function."
   :type 'boolean
   :group 'agent-shell-to-go)
 
+(defcustom agent-shell-to-go-authorized-users nil
+  "List of Slack user IDs authorized to interact with agents.
+If nil, ALL channel members can control agents (UNSAFE for shared channels).
+Find your user ID in Slack: click your profile -> three dots -> Copy member ID."
+  :type '(repeat string)
+  :group 'agent-shell-to-go)
+
 (defun agent-shell-to-go--debug (format-string &rest args)
   "Log a debug message if `agent-shell-to-go-debug' is non-nil."
   (when agent-shell-to-go-debug
     (apply #'message (concat "agent-shell-to-go: " format-string) args)))
+
+(defun agent-shell-to-go--authorized-p (user-id)
+  "Return non-nil if USER-ID is authorized to interact with agents.
+USER-ID is a Slack user ID (e.g., \"U01234567\").
+If `agent-shell-to-go-authorized-users' is nil, all users are authorized.
+Note: This is Slack-specific; other integrations will need their own auth."
+  (or (null agent-shell-to-go-authorized-users)
+      (member user-id agent-shell-to-go-authorized-users)))
 
 (defun agent-shell-to-go--strip-non-ascii (text)
   "Strip non-ASCII characters from TEXT, replacing them with '?'."
@@ -725,21 +739,24 @@ Optionally also match CHANNEL-ID if provided."
          (subtype (alist-get 'subtype event))
          (bot-id (alist-get 'bot_id event))
          (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
-    (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s"
-                              thread-ts channel text buffer)
+    (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s user=%s"
+                              thread-ts channel text buffer user)
     ;; Only handle real user messages in threads we're tracking
     (when (and buffer
                text
                (not subtype)
                (not bot-id)
                (not (equal user (agent-shell-to-go--get-bot-user-id))))
-      (with-current-buffer buffer
-        (if (string-prefix-p "!" text)
-            (progn
-              (agent-shell-to-go--debug "handling command: %s" text)
-              (agent-shell-to-go--handle-command text buffer thread-ts))
-          (agent-shell-to-go--debug "received from Slack: %s" text)
-          (agent-shell-to-go--inject-message text))))))
+      ;; Check authorization
+      (if (not (agent-shell-to-go--authorized-p user))
+          (agent-shell-to-go--debug "unauthorized user %s, ignoring message" user)
+        (with-current-buffer buffer
+          (if (string-prefix-p "!" text)
+              (progn
+                (agent-shell-to-go--debug "handling command: %s" text)
+                (agent-shell-to-go--handle-command text buffer thread-ts))
+            (agent-shell-to-go--debug "received from Slack: %s" text)
+            (agent-shell-to-go--inject-message text)))))))
 
 (defun agent-shell-to-go--hidden-message-path (channel ts)
   "Return the file path for storing hidden message content.
@@ -1032,41 +1049,45 @@ Creates an org TODO file with the message content."
          (msg-ts (alist-get 'ts item))
          (channel (alist-get 'channel item))
          (reaction (alist-get 'reaction event))
+         (user (alist-get 'user event))
          (pending (assoc msg-ts agent-shell-to-go--pending-permissions)))
-    ;; Check for hide reactions first
-    (when (member reaction agent-shell-to-go--hide-reactions)
-      (agent-shell-to-go--hide-message channel msg-ts))
-    ;; Check for expand reactions (show full truncated message)
-    (when (member reaction agent-shell-to-go--expand-reactions)
-      (agent-shell-to-go--expand-message channel msg-ts))
-    ;; Check for heart reactions (send appreciation to agent)
-    (when (member reaction agent-shell-to-go--heart-reactions)
-      (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
-      (agent-shell-to-go--handle-heart-reaction channel msg-ts))
-    ;; Check for bookmark reactions (create TODO)
-    (when (member reaction agent-shell-to-go--bookmark-reactions)
-      (agent-shell-to-go--debug "bookmark reaction: %s on %s" reaction msg-ts)
-      (agent-shell-to-go--handle-bookmark-reaction channel msg-ts))
-    ;; Then check for permission reactions
-    (when pending
-      (let* ((info (cdr pending))
-             (request-id (plist-get info :request-id))
-             (buffer (plist-get info :buffer))
-             (options (plist-get info :options))
-             (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
-        (when (and action buffer (buffer-live-p buffer))
-          (let ((option-id (agent-shell-to-go--find-option-id options action)))
-            (when option-id
-              (with-current-buffer buffer
-                (let ((state agent-shell--state))
-                  (agent-shell--send-permission-response
-                   :client (alist-get :client state)
-                   :request-id request-id
-                   :option-id option-id
-                   :state state)))
-              ;; Remove from pending
-              (setq agent-shell-to-go--pending-permissions
-                    (assq-delete-all msg-ts agent-shell-to-go--pending-permissions)))))))))
+    ;; Check authorization for all reaction handling
+    (if (not (agent-shell-to-go--authorized-p user))
+        (agent-shell-to-go--debug "unauthorized user %s, ignoring reaction %s" user reaction)
+      ;; Check for hide reactions first
+      (when (member reaction agent-shell-to-go--hide-reactions)
+        (agent-shell-to-go--hide-message channel msg-ts))
+      ;; Check for expand reactions (show full truncated message)
+      (when (member reaction agent-shell-to-go--expand-reactions)
+        (agent-shell-to-go--expand-message channel msg-ts))
+      ;; Check for heart reactions (send appreciation to agent)
+      (when (member reaction agent-shell-to-go--heart-reactions)
+        (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
+        (agent-shell-to-go--handle-heart-reaction channel msg-ts))
+      ;; Check for bookmark reactions (create TODO)
+      (when (member reaction agent-shell-to-go--bookmark-reactions)
+        (agent-shell-to-go--debug "bookmark reaction: %s on %s" reaction msg-ts)
+        (agent-shell-to-go--handle-bookmark-reaction channel msg-ts))
+      ;; Then check for permission reactions
+      (when pending
+        (let* ((info (cdr pending))
+               (request-id (plist-get info :request-id))
+               (buffer (plist-get info :buffer))
+               (options (plist-get info :options))
+               (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
+          (when (and action buffer (buffer-live-p buffer))
+            (let ((option-id (agent-shell-to-go--find-option-id options action)))
+              (when option-id
+                (with-current-buffer buffer
+                  (let ((state agent-shell--state))
+                    (agent-shell--send-permission-response
+                     :client (alist-get :client state)
+                     :request-id request-id
+                     :option-id option-id
+                     :state state)))
+                ;; Remove from pending
+                (setq agent-shell-to-go--pending-permissions
+                      (assq-delete-all msg-ts agent-shell-to-go--pending-permissions))))))))))
 
 (defun agent-shell-to-go--start-agent-in-folder (folder &optional use-container)
   "Start a new agent in FOLDER. If USE-CONTAINER is non-nil, pass prefix arg."
@@ -1117,11 +1138,26 @@ Tries projectile first, then project.el, then falls back to buffer directories."
              agent-shell-to-go--project-channels)
     result))
 
+(defcustom agent-shell-to-go-projects-directory "~/code/"
+  "Directory where /new-project creates new project folders."
+  :type 'string
+  :group 'agent-shell-to-go)
+
+(defcustom agent-shell-to-go-new-project-function nil
+  "Function to call to set up a new project.
+Called with (PROJECT-DIR PROJECT-NAME CALLBACK).
+CALLBACK should be called with no args when setup is complete.
+If nil, just creates the directory."
+  :type '(choice (const :tag "Just create directory" nil)
+          (function :tag "Custom setup function"))
+  :group 'agent-shell-to-go)
+
 (defun agent-shell-to-go--handle-slash-command (payload)
   "Handle a slash command PAYLOAD from Slack."
   (let* ((command (alist-get 'command payload))
          (text (alist-get 'text payload))
          (channel (alist-get 'channel_id payload))
+         (user (alist-get 'user_id payload))
          (channel-project (agent-shell-to-go--get-project-for-channel channel))
          (folder (expand-file-name
                   (cond
@@ -1131,29 +1167,69 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                    (channel-project channel-project)
                    ;; Fall back to default
                    (t agent-shell-to-go-default-folder)))))
-    (agent-shell-to-go--debug "slash command: %s %s (channel project: %s)" command text channel-project)
-    (pcase command
-      ("/new-agent"
-       (agent-shell-to-go--start-agent-in-folder folder nil))
-      ("/new-agent-container"
-       (agent-shell-to-go--start-agent-in-folder folder t))
-      ("/projects"
-       (let ((projects (agent-shell-to-go--get-open-projects)))
-         (if projects
-             (progn
-               (agent-shell-to-go--api-request
-                "POST" "chat.postMessage"
-                `((channel . ,channel)
-                  (text . ":file_folder: *Open Projects:*")))
-               (dolist (project projects)
+    (agent-shell-to-go--debug "slash command: %s %s (channel project: %s, user: %s)" command text channel-project user)
+    ;; Check authorization
+    (if (not (agent-shell-to-go--authorized-p user))
+        (agent-shell-to-go--api-request
+         "POST" "chat.postEphemeral"
+         `((channel . ,channel)
+           (user . ,user)
+           (text . ":no_entry: You are not authorized to use this command.")))
+      (pcase command
+        ("/new-project"
+         (if (or (not text) (string-empty-p text))
+             (agent-shell-to-go--api-request
+              "POST" "chat.postMessage"
+              `((channel . ,channel)
+                (text . ":x: Usage: `/new-project <project-name>`")))
+           (let* ((project-name (string-trim text))
+                  (project-dir (expand-file-name project-name agent-shell-to-go-projects-directory)))
+             (if (file-exists-p project-dir)
                  (agent-shell-to-go--api-request
                   "POST" "chat.postMessage"
                   `((channel . ,channel)
-                    (text . ,project)))))
-           (agent-shell-to-go--api-request
-            "POST" "chat.postMessage"
-            `((channel . ,channel)
-              (text . ":shrug: No open projects found")))))))))
+                    (text . ,(format ":warning: Project already exists: `%s`" project-dir))))
+               ;; Create the directory
+               (make-directory project-dir t)
+               (agent-shell-to-go--api-request
+                "POST" "chat.postMessage"
+                `((channel . ,channel)
+                  (text . ,(format ":file_folder: Creating project: `%s`" project-dir))))
+               ;; Set up project and start agent when done
+               (let ((start-agent-fn
+                      (lambda ()
+                        (agent-shell-to-go--api-request
+                         "POST" "chat.postMessage"
+                         `((channel . ,channel)
+                           (text . ":rocket: Starting Claude Code...")))
+                        (agent-shell-to-go--start-agent-in-folder project-dir nil))))
+                 (if agent-shell-to-go-new-project-function
+                     ;; Use custom setup function with callback
+                     (funcall agent-shell-to-go-new-project-function
+                              project-dir project-name start-agent-fn)
+                   ;; No setup function, just start the agent
+                   (funcall start-agent-fn)))))))
+        ("/new-agent"
+         (agent-shell-to-go--start-agent-in-folder folder nil))
+        ("/new-agent-container"
+         (agent-shell-to-go--start-agent-in-folder folder t))
+        ("/projects"
+         (let ((projects (agent-shell-to-go--get-open-projects)))
+           (if projects
+               (progn
+                 (agent-shell-to-go--api-request
+                  "POST" "chat.postMessage"
+                  `((channel . ,channel)
+                    (text . ":file_folder: *Open Projects:*")))
+                 (dolist (project projects)
+                   (agent-shell-to-go--api-request
+                    "POST" "chat.postMessage"
+                    `((channel . ,channel)
+                      (text . ,project)))))
+             (agent-shell-to-go--api-request
+              "POST" "chat.postMessage"
+              `((channel . ,channel)
+                (text . ":shrug: No open projects found"))))))))))
 
 (defvar agent-shell-to-go--intentional-close nil
   "Non-nil when we're intentionally closing the WebSocket (to prevent reconnect loop).")

@@ -1151,9 +1151,9 @@ Tries projectile first, then project.el, then falls back to buffer directories."
 
 (defcustom agent-shell-to-go-new-project-function nil
   "Function to call to set up a new project.
-Called with (PROJECT-DIR PROJECT-NAME CALLBACK).
-CALLBACK should be called with no args when setup is complete.
-If nil, just creates the directory."
+Called with (PROJECT-NAME BASE-DIR CALLBACK).
+CALLBACK is called with PROJECT-DIR when setup is complete.
+If nil, just creates the directory and starts the agent immediately."
   :type '(choice (const :tag "Just create directory" nil)
           (function :tag "Custom setup function"))
   :group 'agent-shell-to-go)
@@ -1195,26 +1195,27 @@ If nil, just creates the directory."
                   "POST" "chat.postMessage"
                   `((channel . ,channel)
                     (text . ,(format ":warning: Project already exists: `%s`" project-dir))))
-               ;; Create the directory
-               (make-directory project-dir t)
                (agent-shell-to-go--api-request
                 "POST" "chat.postMessage"
                 `((channel . ,channel)
                   (text . ,(format ":file_folder: Creating project: `%s`" project-dir))))
                ;; Set up project and start agent when done
                (let ((start-agent-fn
-                      (lambda ()
+                      (lambda (final-project-dir)
                         (agent-shell-to-go--api-request
                          "POST" "chat.postMessage"
                          `((channel . ,channel)
                            (text . ":rocket: Starting Claude Code...")))
-                        (agent-shell-to-go--start-agent-in-folder project-dir nil))))
+                        (agent-shell-to-go--start-agent-in-folder final-project-dir nil))))
                  (if agent-shell-to-go-new-project-function
-                     ;; Use custom setup function with callback
+                     ;; Use custom setup function (PROJECT-NAME BASE-DIR CALLBACK)
                      (funcall agent-shell-to-go-new-project-function
-                              project-dir project-name start-agent-fn)
-                   ;; No setup function, just start the agent
-                   (funcall start-agent-fn)))))))
+                              project-name
+                              (expand-file-name agent-shell-to-go-projects-directory)
+                              start-agent-fn)
+                   ;; No setup function, just create directory and start the agent
+                   (make-directory project-dir t)
+                   (funcall start-agent-fn project-dir)))))))
         ("/new-agent"
          (agent-shell-to-go--start-agent-in-folder folder nil))
         ("/new-agent-container"
@@ -1691,10 +1692,21 @@ ORIG-FN is the original function, ARGS are its arguments."
   ;; Start file watcher for auto-uploading images
   (agent-shell-to-go--start-file-watcher)
 
+  ;; Add kill-buffer hook to send shutdown message
+  (add-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill nil t)
+
   (agent-shell-to-go--debug "mirroring to Slack thread %s" agent-shell-to-go--thread-ts))
+
+(defun agent-shell-to-go--on-buffer-kill ()
+  "Hook to run when an agent-shell buffer is killed."
+  (when agent-shell-to-go-mode
+    (agent-shell-to-go--disable)))
 
 (defun agent-shell-to-go--disable ()
   "Disable Slack mirroring for this buffer."
+  ;; Remove kill hook to avoid double-firing
+  (remove-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill t)
+
   ;; Stop file watcher
   (agent-shell-to-go--stop-file-watcher)
 

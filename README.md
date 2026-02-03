@@ -129,6 +129,7 @@ Skip to [Configure credentials](#2-configure-credentials).
 5. **Add Slash Commands**
    - In the sidebar, click "Slash Commands"
    - Create these commands:
+     - `/new-project` - Description: "Create a new project and start an agent"
      - `/new-agent` - Description: "Start new agent in a folder"
      - `/new-agent-container` - Description: "Start new agent in a container"
      - `/projects` - Description: "List open projects from Emacs"
@@ -243,6 +244,7 @@ Use these anywhere in the channel (not in threads):
 
 | Command | Description |
 |---------|-------------|
+| `/new-project <name>` | Create a new project folder (runs setup function if configured) and start an agent |
 | `/new-agent [folder]` | Start a new agent (defaults to channel's project, then configured folder) |
 | `/new-agent-container [folder]` | Start a new agent in a container (like `C-u` prefix) |
 | `/projects` | List open projects from Emacs (each as a separate message for easy copy) |
@@ -288,6 +290,10 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 
 ;; Custom function to start agents (e.g., your own claude-code wrapper)
 (setq agent-shell-to-go-start-agent-function #'my/start-claude-code)
+
+;; Custom function to set up new projects (for /new-project command)
+;; Called with (PROJECT-NAME BASE-DIR CALLBACK), should call CALLBACK with project-dir when done
+(setq agent-shell-to-go-new-project-function #'my/new-python-project)
 
 ;; Directory for bookmark TODOs (default: ~/org/todo/)
 (setq agent-shell-to-go-todo-directory "~/org/todo/")
@@ -336,6 +342,7 @@ To auto-create directories without prompting, add this to your config:
 - [x] Bookmarks - bookmark reaction creates org-mode TODO scheduled for today
 - [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically
+- [ ] Meta-Claude channel - a `#claude-meta` channel with an always-on Claude that knows about active sessions, can summarize recent activity, route tasks to the right project, and orchestrate across sessions
 - [ ] Matrix integration
 - [ ] Discord integration
 - [ ] Telegram integration

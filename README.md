@@ -24,6 +24,7 @@ Planned/possible integrations:
 - Each agent-shell session gets its own thread within the project channel
 - Messages flow bidirectionally (Emacs ↔ messaging platform)
 - Real-time updates via WebSocket
+- **Message queuing** - messages sent while the agent is busy are queued and processed automatically
 - Permission requests with reaction-based approval
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
 - Start new agents remotely via slash commands
@@ -234,6 +235,8 @@ Send these in the Slack thread to control the session:
 | `!mode` | Show current mode |
 | `!stop` | Interrupt the agent |
 | `!restart` | Kill and restart agent with transcript |
+| `!queue` | Show pending queued messages |
+| `!clearqueue` | Clear all pending queued messages |
 | `!latest` | Jump to bottom of thread |
 | `!debug` | Show session debug info |
 | `!help` | Show available commands |

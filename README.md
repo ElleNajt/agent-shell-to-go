@@ -372,7 +372,7 @@ To auto-create directories without prompting, add this to your config:
 
 ## Related Projects
 
-- [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell) - A supervisory agent that monitors all your sessions. Search across agents, send messages between them, and manage your fleet of AI agents from Slack.
+**Pairs well with [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell)** - A supervisory agent that monitors all your sessions. Search across agents, send messages between them, and manage your fleet of AI agents from Slack.
 
 ## License
 

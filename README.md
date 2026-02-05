@@ -2,6 +2,8 @@
 
 Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhere. Chat with your AI agents from your phone or any device.
 
+Pairs well with [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell) for monitoring and coordinating multiple agents.
+
 | Emacs | Slack (message from phone) | Slack (follow-up from Emacs) |
 |-------|---------------------------|------------------------------|
 | ![Emacs](screenshot-emacs.png) | ![Slack 1](screenshot-slack-1.png) | ![Slack 2](screenshot-slack-2.png) |

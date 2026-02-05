@@ -359,6 +359,21 @@ To auto-create directories without prompting, add this to your config:
                     t)))))
 ```
 
+## Channel Cleanup
+
+If you use agent-shell heavily, you may hit Slack's message limits (especially on free workspaces). Two cleanup commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `agent-shell-to-go-reset-channel` | Archives the current project's channel and creates a fresh one |
+| `agent-shell-to-go-reset-all-channels` | Resets all project channels at once |
+
+This is much faster than deleting messages individually (which Slack doesn't support in bulk).
+
+**Note:** After resetting channels, you may need to clear cache or sign back in on mobile devices - the archived channels can leave Slack's mobile app in a confused state.
+
+**Workspace tier:** If you chat with Claude a lot, you'll likely hit Slack's free tier message limit (90 days of history). Consider a paid workspace to avoid this.
+
 ## Roadmap
 
 - [x] Image uploads - images written by the agent are automatically uploaded to Slack

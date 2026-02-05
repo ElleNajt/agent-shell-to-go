@@ -1964,5 +1964,314 @@ This is useful for sending images that are outside the project directory."
          comment-text)
         (message "Sent image to Slack: %s" (file-name-nondirectory file-path))))))
 
+;;; Cleanup functions
+
+(defun agent-shell-to-go--archive-channel (channel-id)
+  "Archive CHANNEL-ID. Returns t on success."
+  (let* ((response (agent-shell-to-go--api-request
+                    "POST" "conversations.archive"
+                    `((channel . ,channel-id)))))
+    (eq (alist-get 'ok response) t)))
+
+(defun agent-shell-to-go--delete-channel (channel-id)
+  "Delete CHANNEL-ID by archiving it. Slack doesn't allow true deletion via API.
+Returns t on success."
+  ;; Slack API doesn't have conversations.delete - archive is the closest
+  (agent-shell-to-go--archive-channel channel-id))
+
+;;;###autoload
+(defun agent-shell-to-go-reset-channel (&optional channel-id)
+  "Delete and recreate a project channel to clear all messages instantly.
+CHANNEL-ID defaults to the current buffer's channel.
+This is much faster than deleting messages one by one."
+  (interactive)
+  (agent-shell-to-go--load-env)
+  (agent-shell-to-go--load-channels)
+  (let* ((channel (or channel-id
+                      (and (boundp 'agent-shell-to-go--channel-id)
+                           agent-shell-to-go--channel-id)
+                      agent-shell-to-go-channel-id))
+         ;; Find project path for this channel
+         (project-path nil))
+    ;; Look up project path from channel
+    (maphash (lambda (path ch)
+               (when (equal ch channel)
+                 (setq project-path path)))
+             agent-shell-to-go--project-channels)
+    (unless project-path
+      (user-error "Channel %s not found in project mappings" channel))
+    (let ((project-name (file-name-nondirectory (directory-file-name project-path))))
+      ;; Archive the old channel
+      (message "Archiving old channel %s..." channel)
+      (agent-shell-to-go--archive-channel channel)
+      ;; Remove from mappings
+      (remhash project-path agent-shell-to-go--project-channels)
+      (agent-shell-to-go--save-channels)
+      ;; Create fresh channel
+      (let* ((channel-name (concat agent-shell-to-go-channel-prefix
+                                   (agent-shell-to-go--sanitize-channel-name project-name)))
+             (new-channel-id (agent-shell-to-go--create-channel channel-name)))
+        (if new-channel-id
+            (progn
+              (puthash project-path new-channel-id agent-shell-to-go--project-channels)
+              (agent-shell-to-go--save-channels)
+              (message "Created fresh channel %s (%s)" channel-name new-channel-id)
+              ;; Reconnect any active buffers that were using the old channel
+              (dolist (buf agent-shell-to-go--active-buffers)
+                (when (and (buffer-live-p buf)
+                           (equal channel (buffer-local-value 'agent-shell-to-go--channel-id buf)))
+                  (with-current-buffer buf
+                    (setq agent-shell-to-go--channel-id new-channel-id)
+                    (setq agent-shell-to-go--thread-ts
+                          (agent-shell-to-go--start-thread (buffer-name)))
+                    (message "Reconnected %s to new channel" (buffer-name)))))
+              new-channel-id)
+          (user-error "Failed to create new channel"))))))
+
+;;;###autoload
+(defun agent-shell-to-go-reset-all-channels ()
+  "Reset all project channels - archive old ones and create fresh ones.
+Active sessions will be reconnected to the new channels."
+  (interactive)
+  (agent-shell-to-go--load-env)
+  (agent-shell-to-go--load-channels)
+  (let ((channels-to-reset nil))
+    ;; Collect all project channels (not the default)
+    (maphash (lambda (path channel)
+               (unless (equal channel agent-shell-to-go-channel-id)
+                 (push (cons path channel) channels-to-reset)))
+             agent-shell-to-go--project-channels)
+    (if (not channels-to-reset)
+        (message "No project channels to reset")
+      (message "Resetting %d channels..." (length channels-to-reset))
+      (dolist (pair channels-to-reset)
+        (let ((path (car pair))
+              (channel (cdr pair)))
+          (condition-case err
+              (progn
+                (agent-shell-to-go-reset-channel channel)
+                (message "Reset channel for %s" (file-name-nondirectory (directory-file-name path))))
+            (error
+             (message "Failed to reset %s: %s" path err)))))
+      (message "Done resetting channels"))))
+
+(defun agent-shell-to-go--get-channel-messages (channel-id &optional limit)
+  "Get recent messages from CHANNEL-ID.
+LIMIT defaults to 200. Returns list of messages."
+  (let* ((response (agent-shell-to-go--api-request
+                    "GET"
+                    (format "conversations.history?channel=%s&limit=%d"
+                            channel-id (or limit 200))))
+         (messages (alist-get 'messages response)))
+    (when messages
+      (append messages nil))))
+
+(defun agent-shell-to-go--get-thread-replies (channel-id thread-ts)
+  "Get replies in thread THREAD-TS from CHANNEL-ID."
+  (let* ((response (agent-shell-to-go--api-request
+                    "GET"
+                    (format "conversations.replies?channel=%s&ts=%s&limit=1"
+                            channel-id thread-ts)))
+         (messages (alist-get 'messages response)))
+    (when messages
+      (append messages nil))))
+
+(defun agent-shell-to-go--delete-message (channel-id ts)
+  "Delete message at TS in CHANNEL-ID."
+  (agent-shell-to-go--api-request
+   "POST" "chat.delete"
+   `((channel . ,channel-id)
+     (ts . ,ts))))
+
+(defun agent-shell-to-go--thread-active-p (thread-ts)
+  "Return non-nil if THREAD-TS belongs to an active buffer."
+  (cl-some (lambda (buf)
+             (and (buffer-live-p buf)
+                  (equal thread-ts
+                         (buffer-local-value 'agent-shell-to-go--thread-ts buf))))
+           agent-shell-to-go--active-buffers))
+
+(defun agent-shell-to-go--get-agent-shell-threads (channel-id)
+  "Get all Agent Shell Session threads from CHANNEL-ID.
+Returns list of (thread-ts . last-activity-time) for each thread."
+  (let ((messages (agent-shell-to-go--get-channel-messages channel-id 500))
+        (threads nil))
+    (dolist (msg messages)
+      (let ((text (alist-get 'text msg))
+            (ts (alist-get 'ts msg))
+            (reply-count (alist-get 'reply_count msg))
+            (latest-reply (alist-get 'latest_reply msg)))
+        ;; Match our session start messages
+        (when (and text (string-match-p "Agent Shell Session" text))
+          (let ((last-activity (if latest-reply
+                                   (string-to-number latest-reply)
+                                 (string-to-number ts))))
+            (push (cons ts last-activity) threads)))))
+    threads))
+
+(defun agent-shell-to-go--delete-thread (channel-id thread-ts)
+  "Delete all messages in thread THREAD-TS from CHANNEL-ID.
+Returns count of deleted messages."
+  (let ((deleted 0)
+        (cursor nil)
+        (continue t))
+    ;; Get all replies in the thread
+    (while continue
+      (let* ((endpoint (format "conversations.replies?channel=%s&ts=%s&limit=200%s"
+                               channel-id thread-ts
+                               (if cursor (format "&cursor=%s" cursor) "")))
+             (response (agent-shell-to-go--api-request "GET" endpoint))
+             (messages (alist-get 'messages response))
+             (metadata (alist-get 'response_metadata response)))
+        (when messages
+          ;; Delete each message (in reverse to delete replies before parent)
+          (dolist (msg (reverse (append messages nil)))
+            (let ((msg-ts (alist-get 'ts msg)))
+              (agent-shell-to-go--delete-message channel-id msg-ts)
+              (cl-incf deleted))))
+        ;; Check for pagination
+        (setq cursor (alist-get 'next_cursor metadata))
+        (setq continue (and cursor (not (string-empty-p cursor))))))
+    deleted))
+
+(defun agent-shell-to-go--cleanup-async (channel-id thread-timestamps)
+  "Delete THREAD-TIMESTAMPS from CHANNEL-ID asynchronously.
+Spawns a subprocess to do the deletion without blocking Emacs.
+Uses parallel requests for speed."
+  (let* ((token agent-shell-to-go-bot-token)
+         (script (format "
+TOKEN='%s'
+CHANNEL='%s'
+
+delete_msg() {
+  curl -s -X POST 'https://slack.com/api/chat.delete' \
+    -H \"Authorization: Bearer $TOKEN\" \
+    -H 'Content-Type: application/json' \
+    -d \"{\\\"channel\\\":\\\"$CHANNEL\\\",\\\"ts\\\":\\\"$1\\\"}\" > /dev/null
+  echo \"Deleted $1\"
+}
+export -f delete_msg
+export TOKEN CHANNEL
+
+for ts in %s; do
+  echo \"Processing thread $ts...\"
+  cursor=''
+  while true; do
+    if [ -n \"$cursor\" ]; then
+      response=$(curl -s \"https://slack.com/api/conversations.replies?channel=$CHANNEL&ts=$ts&limit=200&cursor=$cursor\" -H \"Authorization: Bearer $TOKEN\")
+    else
+      response=$(curl -s \"https://slack.com/api/conversations.replies?channel=$CHANNEL&ts=$ts&limit=200\" -H \"Authorization: Bearer $TOKEN\")
+    fi
+    
+    # Extract and delete in parallel (10 at a time)
+    echo \"$response\" | grep -o '\"ts\":\"[0-9.]*\"' | sed 's/\"ts\":\"//;s/\"//' | xargs -P 10 -I {} bash -c 'delete_msg \"{}\"'
+    
+    cursor=$(echo \"$response\" | grep -o '\"next_cursor\":\"[^\"]*\"' | sed 's/\"next_cursor\":\"//;s/\"//' | head -1)
+    if [ -z \"$cursor\" ]; then
+      break
+    fi
+  done
+  echo \"Finished thread $ts\"
+done
+echo \"Cleanup complete\"
+"
+                         token channel-id
+                         (mapconcat #'identity thread-timestamps " "))))
+    (let ((proc (start-process-shell-command
+                 "agent-shell-cleanup"
+                 "*Agent Shell Cleanup*"
+                 script)))
+      (message "Cleanup started in background. See *Agent Shell Cleanup* buffer for progress.")
+      proc)))
+
+;;;###autoload
+(defun agent-shell-to-go-list-threads (&optional channel-id)
+  "List all Agent Shell threads in CHANNEL-ID with their age.
+CHANNEL-ID defaults to `agent-shell-to-go-channel-id'."
+  (interactive)
+  (agent-shell-to-go--load-env)
+  (let* ((channel (or channel-id agent-shell-to-go-channel-id))
+         (threads (agent-shell-to-go--get-agent-shell-threads channel))
+         (now (float-time)))
+    (if (not threads)
+        (message "No Agent Shell threads found")
+      (with-current-buffer (get-buffer-create "*Agent Shell Threads*")
+        (erase-buffer)
+        (insert (format "Agent Shell Threads in channel %s\n" channel))
+        (insert (make-string 60 ?-) "\n\n")
+        (dolist (thread (sort threads (lambda (a b) (> (cdr a) (cdr b)))))
+          (let* ((ts (car thread))
+                 (last-activity (cdr thread))
+                 (age-hours (/ (- now last-activity) 3600.0))
+                 (active (agent-shell-to-go--thread-active-p ts))
+                 (status (cond
+                          (active "[ACTIVE]")
+                          ((< age-hours agent-shell-to-go-cleanup-age-hours) "[recent]")
+                          (t "[old]"))))
+            (insert (format "%s %s  %.1fh ago  %s\n"
+                            status
+                            ts
+                            age-hours
+                            (format-time-string "%Y-%m-%d %H:%M" last-activity)))))
+        (insert (format "\n%d threads total\n" (length threads)))
+        (goto-char (point-min))
+        (display-buffer (current-buffer))))))
+
+;;;###autoload
+(defun agent-shell-to-go-cleanup-old-threads (&optional channel-id dry-run)
+  "Delete Agent Shell threads older than `agent-shell-to-go-cleanup-age-hours'.
+Skips threads that are currently active (have a live buffer).
+CHANNEL-ID defaults to `agent-shell-to-go-channel-id'.
+With prefix arg or DRY-RUN non-nil, just report what would be deleted."
+  (interactive (list nil current-prefix-arg))
+  (agent-shell-to-go--load-env)
+  (let* ((channel (or channel-id agent-shell-to-go-channel-id))
+         (threads (agent-shell-to-go--get-agent-shell-threads channel))
+         (now (float-time))
+         (age-threshold (* agent-shell-to-go-cleanup-age-hours 3600))
+         (to-delete nil)
+         (skipped-active 0)
+         (skipped-recent 0))
+    ;; Find threads to delete
+    (dolist (thread threads)
+      (let* ((ts (car thread))
+             (last-activity (cdr thread))
+             (age (- now last-activity)))
+        (cond
+         ((agent-shell-to-go--thread-active-p ts)
+          (cl-incf skipped-active))
+         ((< age age-threshold)
+          (cl-incf skipped-recent))
+         (t
+          (push thread to-delete)))))
+    ;; Report or delete
+    (if (not to-delete)
+        (message "No threads to clean up (skipped %d active, %d recent)"
+                 skipped-active skipped-recent)
+      (if dry-run
+          (progn
+            (message "Would delete %d threads (skipping %d active, %d recent)"
+                     (length to-delete) skipped-active skipped-recent)
+            (agent-shell-to-go-list-threads channel))
+        ;; Delete async
+        (message "Deleting %d threads (skipping %d active, %d recent)..."
+                 (length to-delete) skipped-active skipped-recent)
+        (agent-shell-to-go--cleanup-async channel (mapcar #'car to-delete))))))
+
+;;;###autoload
+(defun agent-shell-to-go-cleanup-all-channels (&optional dry-run)
+  "Clean up old threads in all known project channels.
+With prefix arg or DRY-RUN non-nil, just report what would be deleted."
+  (interactive "P")
+  (agent-shell-to-go--load-env)
+  (agent-shell-to-go--load-channels)
+  (let ((channels (list agent-shell-to-go-channel-id)))
+    ;; Add all project channels
+    (maphash (lambda (_k v) (cl-pushnew v channels :test #'equal))
+             agent-shell-to-go--project-channels)
+    (dolist (channel channels)
+      (message "Checking channel %s..." channel)
+      (agent-shell-to-go-cleanup-old-threads channel dry-run))))
+
 (provide 'agent-shell-to-go)
 ;;; agent-shell-to-go.el ends here

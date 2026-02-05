@@ -1892,10 +1892,80 @@ Use this when a buffer's Slack connection is broken."
         (setq agent-shell-to-go-mode t))
       (message "Reconnected %s to Slack (new thread)" (buffer-name buf)))))
 
+(defun agent-shell-to-go--buffer-connected-p (&optional buffer)
+  "Return non-nil if BUFFER (or current buffer) has a valid Slack connection."
+  (let ((buf (or buffer (current-buffer))))
+    (and (buffer-live-p buf)
+         (buffer-local-value 'agent-shell-to-go--thread-ts buf)
+         (buffer-local-value 'agent-shell-to-go--channel-id buf)
+         (memq buf agent-shell-to-go--active-buffers))))
+
+;;;###autoload
+(defun agent-shell-to-go-ensure-connected (&optional buffer)
+  "Ensure BUFFER (or current buffer) is connected to Slack.
+Only connects if not already connected (idempotent).
+Returns t if was already connected, 'connected if newly connected, nil on failure."
+  (interactive)
+  (let ((buf (or buffer (current-buffer))))
+    (if (agent-shell-to-go--buffer-connected-p buf)
+        t
+      (condition-case err
+          (progn
+            (agent-shell-to-go-reconnect-buffer buf)
+            'connected)
+        (error
+         (message "Failed to connect %s: %s" (buffer-name buf) err)
+         nil)))))
+
+;;;###autoload
+(defun agent-shell-to-go-ensure-all-connected ()
+  "Ensure all agent-shell buffers are connected to Slack.
+Only connects buffers that aren't already connected (idempotent)."
+  (interactive)
+  (let ((connected 0)
+        (already 0)
+        (failed 0)
+        (agent-buffers (cl-remove-if-not
+                        (lambda (buf)
+                          (and (buffer-live-p buf)
+                               (with-current-buffer buf
+                                 (derived-mode-p 'agent-shell-mode))))
+                        (buffer-list))))
+    (dolist (buf agent-buffers)
+      (pcase (agent-shell-to-go-ensure-connected buf)
+        ('t (cl-incf already))
+        ('connected (cl-incf connected))
+        (_ (cl-incf failed))))
+    (when (or (> connected 0) (> failed 0))
+      (message "Slack: %d newly connected, %d already connected, %d failed"
+               connected already failed))))
+
+(defvar agent-shell-to-go--ensure-timer nil
+  "Timer for periodic connection checks.")
+
+;;;###autoload
+(defun agent-shell-to-go-start-periodic-check (&optional interval)
+  "Start periodic check to ensure all buffers stay connected.
+INTERVAL is seconds between checks (default 60)."
+  (interactive)
+  (agent-shell-to-go-stop-periodic-check)
+  (setq agent-shell-to-go--ensure-timer
+        (run-with-timer 0 (or interval 60) #'agent-shell-to-go-ensure-all-connected))
+  (message "Started periodic Slack connection check (every %ds)" (or interval 60)))
+
+;;;###autoload
+(defun agent-shell-to-go-stop-periodic-check ()
+  "Stop periodic connection checks."
+  (interactive)
+  (when agent-shell-to-go--ensure-timer
+    (cancel-timer agent-shell-to-go--ensure-timer)
+    (setq agent-shell-to-go--ensure-timer nil)
+    (message "Stopped periodic Slack connection check")))
+
 ;;;###autoload
 (defun agent-shell-to-go-reconnect-all ()
-  "Reconnect all agent-shell buffers to Slack.
-Finds all buffers in `agent-shell-mode' and ensures they're connected."
+  "Reconnect all agent-shell buffers to Slack (creates new threads).
+Use `agent-shell-to-go-ensure-all-connected' for idempotent connection."
   (interactive)
   (let ((reconnected 0)
         (agent-buffers (cl-remove-if-not
@@ -1965,95 +2035,14 @@ This is useful for sending images that are outside the project directory."
         (message "Sent image to Slack: %s" (file-name-nondirectory file-path))))))
 
 ;;; Cleanup functions
-
-(defun agent-shell-to-go--archive-channel (channel-id)
-  "Archive CHANNEL-ID. Returns t on success."
-  (let* ((response (agent-shell-to-go--api-request
-                    "POST" "conversations.archive"
-                    `((channel . ,channel-id)))))
-    (eq (alist-get 'ok response) t)))
-
-(defun agent-shell-to-go--delete-channel (channel-id)
-  "Delete CHANNEL-ID by archiving it. Slack doesn't allow true deletion via API.
-Returns t on success."
-  ;; Slack API doesn't have conversations.delete - archive is the closest
-  (agent-shell-to-go--archive-channel channel-id))
-
-;;;###autoload
-(defun agent-shell-to-go-reset-channel (&optional channel-id)
-  "Delete and recreate a project channel to clear all messages instantly.
-CHANNEL-ID defaults to the current buffer's channel.
-This is much faster than deleting messages one by one."
-  (interactive)
-  (agent-shell-to-go--load-env)
-  (agent-shell-to-go--load-channels)
-  (let* ((channel (or channel-id
-                      (and (boundp 'agent-shell-to-go--channel-id)
-                           agent-shell-to-go--channel-id)
-                      agent-shell-to-go-channel-id))
-         ;; Find project path for this channel
-         (project-path nil))
-    ;; Look up project path from channel
-    (maphash (lambda (path ch)
-               (when (equal ch channel)
-                 (setq project-path path)))
-             agent-shell-to-go--project-channels)
-    (unless project-path
-      (user-error "Channel %s not found in project mappings" channel))
-    (let ((project-name (file-name-nondirectory (directory-file-name project-path))))
-      ;; Archive the old channel
-      (message "Archiving old channel %s..." channel)
-      (agent-shell-to-go--archive-channel channel)
-      ;; Remove from mappings
-      (remhash project-path agent-shell-to-go--project-channels)
-      (agent-shell-to-go--save-channels)
-      ;; Create fresh channel
-      (let* ((channel-name (concat agent-shell-to-go-channel-prefix
-                                   (agent-shell-to-go--sanitize-channel-name project-name)))
-             (new-channel-id (agent-shell-to-go--create-channel channel-name)))
-        (if new-channel-id
-            (progn
-              (puthash project-path new-channel-id agent-shell-to-go--project-channels)
-              (agent-shell-to-go--save-channels)
-              (message "Created fresh channel %s (%s)" channel-name new-channel-id)
-              ;; Reconnect any active buffers that were using the old channel
-              (dolist (buf agent-shell-to-go--active-buffers)
-                (when (and (buffer-live-p buf)
-                           (equal channel (buffer-local-value 'agent-shell-to-go--channel-id buf)))
-                  (with-current-buffer buf
-                    (setq agent-shell-to-go--channel-id new-channel-id)
-                    (setq agent-shell-to-go--thread-ts
-                          (agent-shell-to-go--start-thread (buffer-name)))
-                    (message "Reconnected %s to new channel" (buffer-name)))))
-              new-channel-id)
-          (user-error "Failed to create new channel"))))))
-
-;;;###autoload
-(defun agent-shell-to-go-reset-all-channels ()
-  "Reset all project channels - archive old ones and create fresh ones.
-Active sessions will be reconnected to the new channels."
-  (interactive)
-  (agent-shell-to-go--load-env)
-  (agent-shell-to-go--load-channels)
-  (let ((channels-to-reset nil))
-    ;; Collect all project channels (not the default)
-    (maphash (lambda (path channel)
-               (unless (equal channel agent-shell-to-go-channel-id)
-                 (push (cons path channel) channels-to-reset)))
-             agent-shell-to-go--project-channels)
-    (if (not channels-to-reset)
-        (message "No project channels to reset")
-      (message "Resetting %d channels..." (length channels-to-reset))
-      (dolist (pair channels-to-reset)
-        (let ((path (car pair))
-              (channel (cdr pair)))
-          (condition-case err
-              (progn
-                (agent-shell-to-go-reset-channel channel)
-                (message "Reset channel for %s" (file-name-nondirectory (directory-file-name path))))
-            (error
-             (message "Failed to reset %s: %s" path err)))))
-      (message "Done resetting channels"))))
+;;
+;; NOTE: Slack doesn't support bulk message deletion. The only "fast" option
+;; would be archiving channels, but bot tokens cannot unarchive channels
+;; (requires user token), which breaks the workflow. So we're stuck with
+;; deleting messages one by one, which is slow but reliable.
+;;
+;; If you hit Slack's free tier message limit, consider upgrading to a paid
+;; workspace.
 
 (defun agent-shell-to-go--get-channel-messages (channel-id &optional limit)
   "Get recent messages from CHANNEL-ID.

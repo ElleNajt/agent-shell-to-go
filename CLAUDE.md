@@ -54,11 +54,24 @@ Common issues:
 - `--handle-reaction-event`: Dispatches reactions to hide/expand/heart/permission handlers
 - `--inject-message`: Sends Slack messages into agent-shell as if typed locally
 
+## Three-State Message Expansion
+
+Tool outputs (when `agent-shell-to-go-show-tool-output` is nil) have three states:
+1. **Collapsed** - Just status icon (✅ or ❌)
+2. **Truncated** (👀) - First ~500 chars + "... 📖 for full output"
+3. **Full** (📖) - Complete output up to Slack's ~4k limit
+
+Files stored in `~/.agent-shell/slack-truncated/CHANNEL/`:
+- `TIMESTAMP.txt` - Full output text
+- `TIMESTAMP.txt.collapsed` - Original collapsed form (status icon)
+
 ## Reaction Handlers
 
 | Reaction | Function |
 |----------|----------|
-| see_no_evil, no_bell | `--hide-message` |
-| eyes | `--expand-message` |
+| see_no_evil, no_bell | `--hide-message` (remove to unhide) |
+| eyes | `--expand-message` (truncated ~500 char view, remove to collapse) |
+| book, open_book | `--full-expand-message` (full output, remove to collapse) |
 | heart, heart_eyes, etc. | `--handle-heart-reaction` |
+| bookmark | `--handle-bookmark-reaction` |
 | white_check_mark, +1, unlock, star, x, -1 | Permission responses |

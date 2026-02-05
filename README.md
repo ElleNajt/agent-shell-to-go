@@ -268,7 +268,8 @@ React to messages in the thread:
 | Emoji | Action |
 |-------|--------|
 | :see_no_evil: or :no_bell: | Hide message completely (remove to unhide) |
-| :eyes: | Expand truncated message (remove to re-truncate) |
+| :eyes: | Glance at hidden message (~500 chars, remove to collapse) |
+| :book: | Full read (show complete output, remove to collapse) |
 
 **Feedback:**
 | Emoji | Action |
@@ -304,6 +305,10 @@ Long messages are automatically truncated to 500 characters with `:eyes: _for mo
 
 ;; Image upload rate limit (default: 30 per minute, nil to disable)
 (setq agent-shell-to-go-image-upload-rate-limit 30)
+
+;; Hide tool call outputs by default (just show ✅/❌)
+;; Use 👀/📖 reactions to expand (default: t shows full output)
+(setq agent-shell-to-go-show-tool-output nil)
 ```
 
 ## Troubleshooting
@@ -359,11 +364,15 @@ To auto-create directories without prompting, add this to your config:
 - [x] Better UTF-8 and unicode handling (now uses curl)
 - [x] Per-project channels - each project gets its own Slack channel automatically
 - [x] Message queuing - messages sent while agent is busy are queued automatically
+- [x] Three-state message expansion - collapsed (icon only), glance (👀, ~500 chars), full read (📖)
 - [ ] Cloudflare Worker relay - Slack's Socket Mode requires your laptop to be online; when it sleeps or loses WiFi, Slack accumulates delivery failures and eventually disables the app. A Cloudflare Worker relay would maintain the Slack Socket Mode connection 24/7, queue messages while you're offline, and forward them when Emacs reconnects.
-- [ ] Meta-Claude channel - a `#claude-meta` channel with an always-on Claude that knows about active sessions, can summarize recent activity, route tasks to the right project, and orchestrate across sessions
 - [ ] Matrix integration
 - [ ] Discord integration
 - [ ] Telegram integration
+
+## Related Projects
+
+- [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell) - A supervisory agent that monitors all your sessions. Search across agents, send messages between them, and manage your fleet of AI agents from Slack.
 
 ## License
 

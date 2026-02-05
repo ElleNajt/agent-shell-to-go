@@ -103,6 +103,12 @@ Override this if you have a custom agent-shell starter function."
   :type 'boolean
   :group 'agent-shell-to-go)
 
+(defcustom agent-shell-to-go-show-tool-output t
+  "When non-nil, show tool call outputs in Slack messages.
+When nil, only status icons are shown (use 👀 reaction to expand)."
+  :type 'boolean
+  :group 'agent-shell-to-go)
+
 (defcustom agent-shell-to-go-authorized-users nil
   "List of Slack user IDs authorized to interact with agents.
 REQUIRED: You must set this for Slack integration to work.
@@ -341,7 +347,11 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
 
 (defconst agent-shell-to-go--expand-reactions
   '("eyes")
-  "Reactions that trigger expanding a truncated message.")
+  "Reactions that trigger expanding to truncated view (glance).")
+
+(defconst agent-shell-to-go--full-expand-reactions
+  '("book" "open_book")
+  "Reactions that trigger full expansion (read everything).")
 
 (defconst agent-shell-to-go--heart-reactions
   '("heart" "heart_eyes" "heartpulse" "sparkling_heart" "two_hearts" "revolving_hearts")
@@ -824,16 +834,30 @@ CHANNEL is the Slack channel ID, TS is the message timestamp."
   (expand-file-name (concat channel "/" ts ".txt")
                     agent-shell-to-go-truncated-messages-dir))
 
-(defun agent-shell-to-go--save-truncated-message (channel ts full-text)
-  "Save FULL-TEXT of truncated message at TS in CHANNEL to disk."
+(defun agent-shell-to-go--save-truncated-message (channel ts full-text &optional collapsed-text)
+  "Save FULL-TEXT of truncated message at TS in CHANNEL to disk.
+If COLLAPSED-TEXT is provided, also save it for restoration when collapsing."
   (let ((path (agent-shell-to-go--truncated-message-path channel ts)))
     (make-directory (file-name-directory path) t)
     (with-temp-file path
-      (insert full-text))))
+      (insert full-text)))
+  ;; Save collapsed form if provided
+  (when collapsed-text
+    (let ((collapsed-path (concat (agent-shell-to-go--truncated-message-path channel ts) ".collapsed")))
+      (with-temp-file collapsed-path
+        (insert collapsed-text)))))
 
 (defun agent-shell-to-go--load-truncated-message (channel ts)
   "Load the full text of truncated message at TS in CHANNEL."
   (let ((path (agent-shell-to-go--truncated-message-path channel ts)))
+    (when (file-exists-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (buffer-string)))))
+
+(defun agent-shell-to-go--load-collapsed-message (channel ts)
+  "Load the collapsed form of message at TS in CHANNEL."
+  (let ((path (concat (agent-shell-to-go--truncated-message-path channel ts) ".collapsed")))
     (when (file-exists-p path)
       (with-temp-buffer
         (insert-file-contents path)
@@ -921,9 +945,28 @@ Returns (old-text . new-text) or nil if no diff found."
       (delete-file old-file)
       (delete-file new-file))))
 
+(defconst agent-shell-to-go--truncated-view-length 500
+  "Length for truncated view (👀 glance).")
+
 (defun agent-shell-to-go--expand-message (channel ts)
-  "Expand truncated message at TS in CHANNEL to show full text.
-If the full text exceeds Slack's limit, show as much as possible with a note."
+  "Expand message at TS in CHANNEL to truncated view (👀 glance).
+Shows first ~500 chars of the full output."
+  (let ((full-text (agent-shell-to-go--load-truncated-message channel ts)))
+    (when full-text
+      (let* ((too-long (> (length full-text) agent-shell-to-go--truncated-view-length))
+             (display-text (if too-long
+                               (concat (substring full-text 0 agent-shell-to-go--truncated-view-length)
+                                       "\n_... 📖 for full output_")
+                             full-text)))
+        (agent-shell-to-go--api-request
+         "POST" "chat.update"
+         `((channel . ,channel)
+           (ts . ,ts)
+           (text . ,display-text)))))))
+
+(defun agent-shell-to-go--full-expand-message (channel ts)
+  "Fully expand message at TS in CHANNEL (📖 read everything).
+Shows full output up to Slack's limit."
   (let ((full-text (agent-shell-to-go--load-truncated-message channel ts)))
     (when full-text
       (let* ((too-long (> (length full-text) agent-shell-to-go--slack-max-length))
@@ -1005,16 +1048,23 @@ Creates an org TODO file with the message content."
        channel))))
 
 (defun agent-shell-to-go--collapse-message (channel ts)
-  "Re-truncate expanded message at TS in CHANNEL."
-  (let* ((full-text (agent-shell-to-go--load-truncated-message channel ts))
-         (truncated (and full-text
-                         (agent-shell-to-go--truncate-message full-text 500))))
-    (when truncated
+  "Re-truncate expanded message at TS in CHANNEL.
+First tries to restore the saved collapsed form (e.g. status icon).
+Falls back to truncating the full text if no collapsed form was saved."
+  (let* ((collapsed (agent-shell-to-go--load-collapsed-message channel ts))
+         (full-text (agent-shell-to-go--load-truncated-message channel ts))
+         (restore-text (or collapsed
+                           (and full-text
+                                (agent-shell-to-go--truncate-message full-text 500)))))
+    (agent-shell-to-go--debug "collapse-message: ts=%s collapsed=%s full-text=%s"
+                              ts (and collapsed (substring collapsed 0 (min 50 (length collapsed))))
+                              (and full-text (substring full-text 0 (min 50 (length full-text)))))
+    (when restore-text
       (agent-shell-to-go--api-request
        "POST" "chat.update"
        `((channel . ,channel)
          (ts . ,ts)
-         (text . ,truncated))))))
+         (text . ,restore-text))))))
 
 (defun agent-shell-to-go--hide-message (channel ts)
   "Hide message at TS in CHANNEL by replacing with collapsed text."
@@ -1050,6 +1100,9 @@ Creates an org TODO file with the message content."
       (agent-shell-to-go--unhide-message channel msg-ts))
     ;; Check if it was an expand reaction being removed (re-truncate)
     (when (member reaction agent-shell-to-go--expand-reactions)
+      (agent-shell-to-go--collapse-message channel msg-ts))
+    ;; Check if it was a full-expand reaction being removed (re-truncate)
+    (when (member reaction agent-shell-to-go--full-expand-reactions)
       (agent-shell-to-go--collapse-message channel msg-ts))))
 
 (defun agent-shell-to-go--handle-reaction-event (event)
@@ -1063,9 +1116,12 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
     ;; Check for hide reactions first
     (when (member reaction agent-shell-to-go--hide-reactions)
       (agent-shell-to-go--hide-message channel msg-ts))
-    ;; Check for expand reactions (show full truncated message)
+    ;; Check for expand reactions (show truncated glance view)
     (when (member reaction agent-shell-to-go--expand-reactions)
       (agent-shell-to-go--expand-message channel msg-ts))
+    ;; Check for full-expand reactions (show full output)
+    (when (member reaction agent-shell-to-go--full-expand-reactions)
+      (agent-shell-to-go--full-expand-message channel msg-ts))
     ;; Check for heart reactions (send appreciation to agent)
     (when (member reaction agent-shell-to-go--heart-reactions)
       (agent-shell-to-go--debug "heart reaction: %s on %s" reaction msg-ts)
@@ -1459,26 +1515,35 @@ ORIG-FN is the original function, ARGS are its arguments."
                                          (car diff) (cdr diff))
                                       (error nil)))))
                (when (member status '("completed" "failed"))
-                 (cond
-                  ;; Has diff - show diff
-                  ((and diff-text (> (length diff-text) 0))
-                   (agent-shell-to-go--send
-                    (format "%s\n```diff\n%s\n```"
-                            (if (equal status "completed") ":white_check_mark:" ":x:")
-                            diff-text)
-                    thread-ts nil t))
-                  ;; Has output - show output
-                  ((and output (stringp output) (> (length output) 0))
-                   (agent-shell-to-go--send
-                    (format "%s\n```\n%s\n```"
-                            (if (equal status "completed") ":white_check_mark:" ":x:")
-                            output)
-                    thread-ts nil t))
-                  ;; Neither - just show status
-                  (t
-                   (agent-shell-to-go--send
-                    (if (equal status "completed") ":white_check_mark:" ":x:")
-                    thread-ts)))))))))))  ; truncate=t
+                 (let ((status-icon (if (equal status "completed") ":white_check_mark:" ":x:")))
+                   (cond
+                    ;; Has diff - show diff
+                    ((and diff-text (> (length diff-text) 0))
+                     (let ((full-text (format "%s\n```diff\n%s\n```" status-icon diff-text)))
+                       (if agent-shell-to-go-show-tool-output
+                           (agent-shell-to-go--send full-text thread-ts nil t)
+                         ;; Hidden mode: show just icon, save full for expansion
+                         (let* ((response (agent-shell-to-go--send status-icon thread-ts))
+                                (msg-ts (alist-get 'ts response)))
+                           (when msg-ts
+                             (with-current-buffer buffer
+                               (agent-shell-to-go--save-truncated-message
+                                agent-shell-to-go--channel-id msg-ts full-text status-icon)))))))
+                    ;; Has output - show output
+                    ((and output (stringp output) (> (length output) 0))
+                     (let ((full-text (format "%s\n```\n%s\n```" status-icon output)))
+                       (if agent-shell-to-go-show-tool-output
+                           (agent-shell-to-go--send full-text thread-ts nil t)
+                         ;; Hidden mode: show just icon, save full for expansion
+                         (let* ((response (agent-shell-to-go--send status-icon thread-ts))
+                                (msg-ts (alist-get 'ts response)))
+                           (when msg-ts
+                             (with-current-buffer buffer
+                               (agent-shell-to-go--save-truncated-message
+                                agent-shell-to-go--channel-id msg-ts full-text status-icon)))))))
+                    ;; Neither - just show status
+                    (t
+                     (agent-shell-to-go--send status-icon thread-ts))))))))))))  ; truncate=t
   (apply orig-fn args))
 
 (defun agent-shell-to-go--on-heartbeat-stop (orig-fn &rest args)

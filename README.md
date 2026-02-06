@@ -31,6 +31,7 @@ Planned/possible integrations:
 - Mode switching via commands (`!yolo`, `!safe`, `!plan`)
 - Start new agents remotely via slash commands
 - **Image uploads** - images created anywhere in the project are automatically uploaded to Slack (requires `fswatch`)
+- **Error forwarding** - agent startup failures and API errors are automatically reported to the Slack thread
 - Works with any agent-shell agent (Claude Code, Gemini, etc.)
 
 ## Security

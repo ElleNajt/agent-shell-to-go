@@ -716,10 +716,12 @@ Optionally also match CHANNEL-ID if provided."
     (agent-shell-to-go--debug "websocket message type: %s" type)
     (pcase type
       ("events_api"
-       (agent-shell-to-go--handle-event (alist-get 'payload data)))
+       (let ((event-payload (alist-get 'payload data)))
+         (run-at-time 0 nil #'agent-shell-to-go--handle-event event-payload)))
       ("slash_commands"
        (agent-shell-to-go--debug "got slash_commands payload: %s" (alist-get 'payload data))
-       (agent-shell-to-go--handle-slash-command (alist-get 'payload data)))
+       (let ((slash-payload (alist-get 'payload data)))
+         (run-at-time 0 nil #'agent-shell-to-go--handle-slash-command slash-payload)))
       ("hello"
        (agent-shell-to-go--debug "WebSocket connected"))
       ("disconnect"
@@ -810,7 +812,7 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
       (agent-shell-to-go--log-event "msg-in" msg-ts text
                                     (cond
                                      ((not buffer) "no-buffer")
-                                     ((agent-shell-to-go--message-already-processed-p msg-ts) "duplicate")
+                                     ((gethash msg-ts agent-shell-to-go--processed-message-ts) "duplicate")
                                      (t "processing"))))
     ;; Only handle real user messages in threads we're tracking
     ;; Also deduplicate by message timestamp
@@ -1246,13 +1248,15 @@ Tries projectile first, then project.el, then falls back to buffer directories."
                    (buffer-list)))))))
 
 (defun agent-shell-to-go--get-project-for-channel (channel-id)
-  "Get the project path associated with CHANNEL-ID, or nil if not found."
-  (let ((result nil))
+  "Get the project path associated with CHANNEL-ID, or nil if not found.
+When multiple projects map to the same channel, prefer one that exists on disk."
+  (let (candidates)
     (maphash (lambda (project-path ch-id)
                (when (equal ch-id channel-id)
-                 (setq result project-path)))
+                 (push project-path candidates)))
              agent-shell-to-go--project-channels)
-    result))
+    (or (cl-find-if #'file-directory-p candidates)
+        (car candidates))))
 
 (defcustom agent-shell-to-go-projects-directory "~/code/"
   "Directory where /new-project creates new project folders."
@@ -1447,6 +1451,48 @@ ORIG-FN is the original function, ARGS are its arguments."
   (setq agent-shell-to-go--from-slack nil)
   (setq agent-shell-to-go--current-agent-message nil)
   (apply orig-fn args))
+
+(cl-defun agent-shell-to-go--on-client-initialized (&key shell)
+  "After-advice for `agent-shell--initialize-client'.
+When client creation fails, forward error to Slack.
+SHELL is the shell-maker shell."
+  (let ((buffer (map-elt agent-shell--state :buffer)))
+    (agent-shell-to-go--debug "initialize-client: buffer=%s to-go-mode=%s client=%s"
+                              (and buffer (buffer-name buffer))
+                              (and buffer (buffer-live-p buffer)
+                                   (buffer-local-value 'agent-shell-to-go-mode buffer))
+                              (not (null (map-elt agent-shell--state :client))))
+    (when (and buffer
+               (buffer-live-p buffer)
+               (buffer-local-value 'agent-shell-to-go-mode buffer)
+               (not (map-elt agent-shell--state :client)))
+      (with-current-buffer buffer
+        (when agent-shell-to-go--thread-ts
+          (agent-shell-to-go--send
+           ":rotating_light: *Agent failed to start:* No client created (check API key / OAuth token)"
+           agent-shell-to-go--thread-ts))))))
+
+(cl-defun agent-shell-to-go--on-subscriptions-initialized (&key shell)
+  "After-advice for `agent-shell--initialize-subscriptions'.
+Subscribe to ACP errors and forward them to Slack.
+SHELL is the shell-maker shell."
+  (let ((buffer (map-elt agent-shell--state :buffer)))
+    (when (and buffer
+               (buffer-live-p buffer)
+               (buffer-local-value 'agent-shell-to-go-mode buffer)
+               (map-elt agent-shell--state :client))
+      (acp-subscribe-to-errors
+       :client (map-elt agent-shell--state :client)
+       :buffer buffer
+       :on-error (lambda (error)
+                   (with-current-buffer buffer
+                     (when agent-shell-to-go--thread-ts
+                       (agent-shell-to-go--send
+                        (format ":rotating_light: *Agent error:*\n```\n%s\n```"
+                                (or (map-elt error 'message)
+                                    (map-elt error 'data)
+                                    "Unknown error"))
+                        agent-shell-to-go--thread-ts))))))))
 
 (defun agent-shell-to-go--on-notification (orig-fn &rest args)
   "Advice for agent-shell--on-notification. Mirror updates to Slack.
@@ -1844,6 +1890,8 @@ If the shell is busy, queue the message for later processing."
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
+  (advice-add 'agent-shell--initialize-client :after #'agent-shell-to-go--on-client-initialized)
+  (advice-add 'agent-shell--initialize-subscriptions :after #'agent-shell-to-go--on-subscriptions-initialized)
 
   ;; Start file watcher for auto-uploading images
   (agent-shell-to-go--start-file-watcher)
@@ -1879,7 +1927,9 @@ If the shell is busy, queue the message for later processing."
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
-    (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop))
+    (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop)
+    (advice-remove 'agent-shell--initialize-client #'agent-shell-to-go--on-client-initialized)
+    (advice-remove 'agent-shell--initialize-subscriptions #'agent-shell-to-go--on-subscriptions-initialized))
 
   (agent-shell-to-go--debug "mirroring disabled"))
 
@@ -1902,7 +1952,11 @@ Take your AI agent sessions anywhere - chat from your phone!"
 ;;;###autoload
 (defun agent-shell-to-go-setup ()
   "Set up automatic Slack mirroring for all agent-shell sessions."
-  (add-hook 'agent-shell-mode-hook #'agent-shell-to-go-auto-enable))
+  (add-hook 'agent-shell-mode-hook #'agent-shell-to-go-auto-enable)
+  ;; Connect WebSocket eagerly so slash commands work before any local agent starts
+  (unless (and agent-shell-to-go--websocket
+               (websocket-openp agent-shell-to-go--websocket))
+    (agent-shell-to-go--websocket-connect)))
 
 ;;;###autoload
 (defun agent-shell-to-go-reconnect-buffer (&optional buffer)

@@ -343,6 +343,26 @@ If Slack disables your app (you'll get an email), or if events stop arriving aft
 
 The existing websocket connection becomes stale when Slack disables/re-enables events - you need to establish a fresh connection.
 
+### Claude Code: OAuth token expired
+
+If agents show `Authentication required` or `OAuth token has expired` errors in the Slack thread, the Claude CLI's OAuth token needs refreshing. Run `claude setup-token` in a terminal to get a long-lived token, then set it:
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=<token>
+```
+
+Or persist it for Emacs:
+
+```elisp
+;; Save token to ~/.ssh/claude-oauth-token (chmod 600), then:
+(setenv "CLAUDE_CODE_OAUTH_TOKEN"
+        (string-trim (with-temp-buffer
+                       (insert-file-contents "~/.ssh/claude-oauth-token")
+                       (buffer-string))))
+```
+
+Note: the regular OAuth token (from `claude login`) expires frequently. The `setup-token` long-lived token is more reliable for always-on setups.
+
 ### Agent gets stuck when writing to new directories
 
 If your agent gets stuck when trying to create a file in a directory that doesn't exist, Emacs may be prompting for confirmation. Doom Emacs has a `doom-create-missing-directories-h` hook that prompts `y-or-n-p` before creating directories.

@@ -1918,10 +1918,21 @@ Returns t if was already connected, 'connected if newly connected, nil on failur
          nil)))))
 
 ;;;###autoload
+(defun agent-shell-to-go--websocket-healthy-p ()
+  "Return non-nil if the websocket connection is healthy."
+  (and agent-shell-to-go--websocket
+       (websocket-openp agent-shell-to-go--websocket)))
+
 (defun agent-shell-to-go-ensure-all-connected ()
   "Ensure all agent-shell buffers are connected to Slack.
+Also checks websocket health and reconnects if needed.
 Only connects buffers that aren't already connected (idempotent)."
   (interactive)
+  ;; First ensure websocket is healthy
+  (unless (agent-shell-to-go--websocket-healthy-p)
+    (message "Slack websocket unhealthy, reconnecting...")
+    (agent-shell-to-go--websocket-connect))
+  ;; Then check all buffers
   (let ((connected 0)
         (already 0)
         (failed 0)

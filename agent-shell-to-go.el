@@ -751,6 +751,23 @@ All events are gated on `agent-shell-to-go-authorized-users'."
            (agent-shell-to-go--debug "reaction removed event: %s" event)
            (agent-shell-to-go--handle-reaction-removed-event event)))))))
 
+(defvar agent-shell-to-go--processed-message-ts (make-hash-table :test 'equal)
+  "Hash table of recently processed message timestamps to prevent duplicates.")
+
+(defun agent-shell-to-go--message-already-processed-p (ts)
+  "Return non-nil if message TS was already processed. Marks it as processed."
+  (if (gethash ts agent-shell-to-go--processed-message-ts)
+      t
+    ;; Mark as processed, auto-expire after 60 seconds
+    (puthash ts (float-time) agent-shell-to-go--processed-message-ts)
+    ;; Clean up old entries (older than 60s)
+    (let ((now (float-time)))
+      (maphash (lambda (k v)
+                 (when (> (- now v) 60)
+                   (remhash k agent-shell-to-go--processed-message-ts)))
+               agent-shell-to-go--processed-message-ts))
+    nil))
+
 (defun agent-shell-to-go--handle-message-event (event)
   "Handle a message EVENT from Slack.
 Authorization is checked upstream in `agent-shell-to-go--handle-event'."
@@ -758,14 +775,18 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
          (channel (alist-get 'channel event))
          (user (alist-get 'user event))
          (text (alist-get 'text event))
+         (msg-ts (alist-get 'ts event))
          (subtype (alist-get 'subtype event))
          (bot-id (alist-get 'bot_id event))
          (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
     (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s"
                               thread-ts channel text buffer)
     ;; Only handle real user messages in threads we're tracking
+    ;; Also deduplicate by message timestamp
     (when (and buffer
                text
+               msg-ts
+               (not (agent-shell-to-go--message-already-processed-p msg-ts))
                (not subtype)
                (not bot-id)
                (not (equal user (agent-shell-to-go--get-bot-user-id))))

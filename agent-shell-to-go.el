@@ -1472,27 +1472,7 @@ SHELL is the shell-maker shell."
            ":rotating_light: *Agent failed to start:* No client created (check API key / OAuth token)"
            agent-shell-to-go--thread-ts))))))
 
-(cl-defun agent-shell-to-go--on-subscriptions-initialized (&key shell)
-  "After-advice for `agent-shell--initialize-subscriptions'.
-Subscribe to ACP errors and forward them to Slack.
-SHELL is the shell-maker shell."
-  (let ((buffer (map-elt agent-shell--state :buffer)))
-    (when (and buffer
-               (buffer-live-p buffer)
-               (buffer-local-value 'agent-shell-to-go-mode buffer)
-               (map-elt agent-shell--state :client))
-      (acp-subscribe-to-errors
-       :client (map-elt agent-shell--state :client)
-       :buffer buffer
-       :on-error (lambda (error)
-                   (with-current-buffer buffer
-                     (when agent-shell-to-go--thread-ts
-                       (agent-shell-to-go--send
-                        (format ":rotating_light: *Agent error:*\n```\n%s\n```"
-                                (or (map-elt error 'message)
-                                    (map-elt error 'data)
-                                    "Unknown error"))
-                        agent-shell-to-go--thread-ts))))))))
+
 
 (defun agent-shell-to-go--on-notification (orig-fn &rest args)
   "Advice for agent-shell--on-notification. Mirror updates to Slack.
@@ -1891,7 +1871,6 @@ If the shell is busy, queue the message for later processing."
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
   (advice-add 'agent-shell--initialize-client :after #'agent-shell-to-go--on-client-initialized)
-  (advice-add 'agent-shell--initialize-subscriptions :after #'agent-shell-to-go--on-subscriptions-initialized)
 
   ;; Start file watcher for auto-uploading images
   (agent-shell-to-go--start-file-watcher)
@@ -1928,8 +1907,7 @@ If the shell is busy, queue the message for later processing."
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop)
-    (advice-remove 'agent-shell--initialize-client #'agent-shell-to-go--on-client-initialized)
-    (advice-remove 'agent-shell--initialize-subscriptions #'agent-shell-to-go--on-subscriptions-initialized))
+    (advice-remove 'agent-shell--initialize-client #'agent-shell-to-go--on-client-initialized))
 
   (agent-shell-to-go--debug "mirroring disabled"))
 

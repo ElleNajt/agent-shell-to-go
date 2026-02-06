@@ -726,6 +726,30 @@ Optionally also match CHANNEL-ID if provided."
        (agent-shell-to-go--debug "WebSocket disconnect requested, reconnecting...")
        (agent-shell-to-go--websocket-reconnect)))))
 
+(defcustom agent-shell-to-go-event-log-max-entries 200
+  "Maximum number of entries to keep in the event log buffer."
+  :type 'integer
+  :group 'agent-shell-to-go)
+
+(defun agent-shell-to-go--log-event (type ts text &optional extra)
+  "Log an event to *Agent Shell Events* buffer.
+TYPE is the event type, TS is the timestamp, TEXT is the message preview.
+EXTRA is optional additional info (like 'duplicate' or 'processed')."
+  (let ((buf (get-buffer-create "*Agent Shell Events*")))
+    (with-current-buffer buf
+      (goto-char (point-max))
+      (insert (format "[%s] %s ts=%s %s%s\n"
+                      (format-time-string "%H:%M:%S")
+                      type
+                      (or ts "nil")
+                      (truncate-string-to-width (or text "") 50)
+                      (if extra (format " (%s)" extra) "")))
+      ;; Trim to max entries
+      (when (> (count-lines (point-min) (point-max)) agent-shell-to-go-event-log-max-entries)
+        (goto-char (point-min))
+        (forward-line 50)
+        (delete-region (point-min) (point))))))
+
 (defun agent-shell-to-go--handle-event (payload)
   "Handle Slack event PAYLOAD.
 All events are gated on `agent-shell-to-go-authorized-users'."
@@ -781,15 +805,24 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
          (buffer (and thread-ts (agent-shell-to-go--find-buffer-for-thread thread-ts channel))))
     (agent-shell-to-go--debug "message event: thread=%s channel=%s text=%s buffer=%s"
                               thread-ts channel text buffer)
+    ;; Log all incoming messages (for debugging duplicates)
+    (when (and text (not bot-id) (not subtype))
+      (agent-shell-to-go--log-event "msg-in" msg-ts text
+                                    (cond
+                                     ((not buffer) "no-buffer")
+                                     ((agent-shell-to-go--message-already-processed-p msg-ts) "duplicate")
+                                     (t "processing"))))
     ;; Only handle real user messages in threads we're tracking
     ;; Also deduplicate by message timestamp
     (when (and buffer
                text
                msg-ts
-               (not (agent-shell-to-go--message-already-processed-p msg-ts))
+               (not (gethash msg-ts agent-shell-to-go--processed-message-ts))
                (not subtype)
                (not bot-id)
                (not (equal user (agent-shell-to-go--get-bot-user-id))))
+      ;; Mark as processed before handling
+      (puthash msg-ts (float-time) agent-shell-to-go--processed-message-ts)
       (with-current-buffer buffer
         (if (string-prefix-p "!" text)
             (progn

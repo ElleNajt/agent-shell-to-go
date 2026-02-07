@@ -637,7 +637,8 @@ If TRUNCATE is non-nil, truncate long messages and store full text for 👀 expa
 (defun agent-shell-to-go--start-thread (buffer-name)
   "Start a new Slack thread for BUFFER-NAME, return thread_ts."
   (let* ((response (agent-shell-to-go--send
-                    (format ":robot_face: *Agent Shell Session*\n`%s`\n_%s_"
+                    (format ":robot_face: *Agent Shell Session* @ %s\n`%s`\n_%s_"
+                            (system-name)
                             buffer-name
                             (format-time-string "%Y-%m-%d %H:%M:%S"))))
          (ts (alist-get 'ts response)))

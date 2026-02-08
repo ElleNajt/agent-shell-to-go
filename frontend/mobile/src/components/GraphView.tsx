@@ -158,7 +158,7 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
             const midY = fromY + (toY - fromY) / 2;
 
             return (
-              <View key={i}>
+              <View key={`edge-${edge.from}-${edge.to}`}>
                 {/* Vertical line from parent */}
                 <View
                   style={[

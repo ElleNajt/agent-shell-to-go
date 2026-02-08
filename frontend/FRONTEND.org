@@ -1,0 +1,95 @@
+#+TITLE: Mobile Frontend Setup
+#+OPTIONS: toc:nil
+
+* Overview
+
+Mobile app for viewing and interacting with agent-shell sessions. Shows agents as a hierarchical graph, supports bidirectional messaging, and can browse project files.
+
+* Architecture
+
+#+begin_example
+Phone (Expo Go)  ←→  Go Backend  ←→  Emacs
+     ↓                    ↓              ↓
+React Native         SQLite +      agent-shell-to-go-mobile.el
+                    WebSocket
+#+end_example
+
+* Setup
+
+** 1. Start the Go Backend
+
+#+begin_src bash
+cd frontend/backend
+
+# Build (requires Go)
+nix-shell -p go --run "go build -o agent-shell-backend ."
+
+# Run on Tailscale IP
+AGENT_SHELL_API_TOKEN=NOAUTH ./agent-shell-backend \
+  --listen $(tailscale ip -4):8080 \
+  --db ./agents.db
+#+end_src
+
+** 2. Configure Mobile App
+
+Create =frontend/mobile/config.json=:
+
+#+begin_src json
+{
+  "backendUrl": "http://YOUR_TAILSCALE_IP:8080",
+  "token": "NOAUTH"
+}
+#+end_src
+
+** 3. Enable in Emacs
+
+#+begin_src elisp
+(setq agent-shell-to-go-mobile-backend-url "http://YOUR_TAILSCALE_IP:8080")
+(setq agent-shell-to-go-mobile-token "NOAUTH")
+
+;; Enable on all agent buffers
+(dolist (buf (buffer-list))
+  (when (string-match-p "Agent @" (buffer-name buf))
+    (with-current-buffer buf
+      (agent-shell-to-go-mobile-mode 1))))
+#+end_src
+
+** 4. Run Mobile App
+
+#+begin_src bash
+cd frontend/mobile
+npm install
+npx expo start
+#+end_src
+
+Then on your phone:
+1. Install "Expo Go" from App Store / Play Store
+2. Make sure phone is on Tailscale
+3. Open Expo Go, enter: =exp://YOUR_TAILSCALE_IP:8081=
+
+* Features
+
+- *Graph View*: Hierarchical view of agents (drag to pan)
+- *Chat*: Send messages to agents, see responses
+- *Stop/End*: Interrupt or close agents
+- *Spawn*: Create new agents or dispatchers
+- *File Explorer*: Browse project files, view images
+
+* Security
+
+The backend only binds to your Tailscale IP, so only devices on your tailnet can access it. =NOAUTH= is fine since Tailscale is the security boundary.
+
+* Troubleshooting
+
+** App can't connect
+- Check phone is on Tailscale
+- Verify backend is running: =curl http://TAILSCALE_IP:8080/health=
+- Check config.json has correct IP
+
+** Messages not syncing
+- Ensure =agent-shell-to-go-mobile-mode= is enabled in Emacs
+- Check WebSocket: =M-x describe-variable agent-shell-to-go-mobile--websocket=
+
+** Graph looks wrong
+- Hierarchy comes from =parent_session_id= in database
+- Clear and re-register: restart mobile-mode on all buffers

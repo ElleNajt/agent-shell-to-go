@@ -1,0 +1,286 @@
+#+TITLE: Slack Transport Setup
+#+AUTHOR: Elle Najt
+
+* Overview
+
+The Slack transport mirrors agent-shell conversations to Slack threads, enabling bidirectional communication via Socket Mode (WebSocket).
+
+* Features
+
+- Per-project channels (each project gets its own Slack channel)
+- Each session gets its own thread within the channel
+- Real-time bidirectional messaging
+- Permission requests with reaction-based approval
+- Mode switching via commands (~!yolo~, ~!safe~, ~!plan~)
+- Start new agents remotely via slash commands
+- Image uploads (requires ~fswatch~)
+- Error forwarding to Slack thread
+
+* Security
+
+** Authorized Users (required)
+
+You *must* set an allowlist of Slack user IDs:
+
+#+begin_src elisp
+(setq agent-shell-to-go-slack-authorized-users '("U01234567" "U89ABCDEF"))
+#+end_src
+
+Without this, all Slack interactions are ignored. To find your user ID: click your profile in Slack → three dots → "Copy member ID".
+
+** Additional Recommendations
+
+- *Limit workspace membership* - Only invite trusted people
+- *Run agents in VMs/containers* - For isolation on risky tasks
+- *Opt out of Slack ML training* - Email ~feedback@slack.com~ with subject "Slack Global model opt-out request"
+- Keep tokens secure (treat like SSH keys)
+
+* Setup
+
+** 1. Create a Slack App
+
+*** Quick setup (recommended)
+
+1. Go to https://api.slack.com/apps
+2. Click "Create New App" → "From an app manifest"
+3. Select your workspace
+4. Paste the contents of [[file:slack-app-manifest.yaml][slack-app-manifest.yaml]]
+5. Click "Create"
+6. Go to "OAuth & Permissions" → "Install to Workspace" → copy the Bot Token (~xoxb-...~)
+7. Go to "Basic Information" → "App-Level Tokens" → "Generate Token" with ~connections:write~ scope → copy it (~xapp-...~)
+8. Get your channel ID (right-click channel → "View channel details" → scroll to bottom)
+9. Invite the bot to your channel: ~/invite @agent-shell-to-go~
+
+*** Manual setup
+
+1. *Create the app*
+   - Go to https://api.slack.com/apps
+   - Click "Create New App" → "From scratch"
+   - Name it "agent-shell-to-go"
+   - Select your workspace
+
+2. *Enable Socket Mode*
+   - Sidebar → "Socket Mode" → toggle ON
+   - Create app-level token with ~connections:write~ scope
+   - Save the token (~xapp-...~)
+
+3. *Add Bot Token Scopes*
+   - Sidebar → "OAuth & Permissions" → "Bot Token Scopes"
+   - Add: ~chat:write~, ~channels:history~, ~channels:read~, ~reactions:read~
+
+4. *Subscribe to Events*
+   - Sidebar → "Event Subscriptions" → toggle ON
+   - "Subscribe to bot events" → add:
+     - ~message.channels~
+     - ~reaction_added~
+     - ~reaction_removed~
+
+5. *Add Slash Commands*
+   - Sidebar → "Slash Commands" → create:
+     - ~/new-project~ - Create a new project and start an agent
+     - ~/new-agent~ - Start new agent in a folder
+     - ~/new-agent-container~ - Start new agent in a container
+     - ~/projects~ - List open projects from Emacs
+
+6. *Install the App*
+   - Sidebar → "Install App" → "Install to Workspace"
+   - Copy the Bot User OAuth Token (~xoxb-...~)
+
+7. *Set up your channel*
+   - Create or choose a channel
+   - Invite the bot: ~/invite @agent-shell-to-go~
+   - Get channel ID: right-click channel → "View channel details" → scroll to bottom
+
+** 2. Configure Credentials
+
+*These credentials are extremely sensitive.* Treat them like SSH keys.
+
+*** Option A: Using pass (recommended)
+
+#+begin_src elisp
+(setq agent-shell-to-go-slack-bot-token
+      (string-trim (shell-command-to-string "pass slack/agent-shell-bot-token")))
+(setq agent-shell-to-go-slack-channel-id
+      (string-trim (shell-command-to-string "pass slack/agent-shell-channel-id")))
+(setq agent-shell-to-go-slack-app-token
+      (string-trim (shell-command-to-string "pass slack/agent-shell-app-token")))
+#+end_src
+
+*** Option B: Using macOS Keychain
+
+#+begin_src elisp
+(defun my/keychain-get (service account)
+  (string-trim (shell-command-to-string
+                (format "security find-generic-password -s '%s' -a '%s' -w" service account))))
+
+(setq agent-shell-to-go-slack-bot-token (my/keychain-get "agent-shell-to-go" "bot-token"))
+(setq agent-shell-to-go-slack-channel-id (my/keychain-get "agent-shell-to-go" "channel-id"))
+(setq agent-shell-to-go-slack-app-token (my/keychain-get "agent-shell-to-go" "app-token"))
+(setq agent-shell-to-go-slack-user-id (my/keychain-get "agent-shell-to-go" "user-id"))
+#+end_src
+
+To add credentials to Keychain:
+#+begin_src bash
+security add-generic-password -s "agent-shell-to-go" -a "bot-token" -w "xoxb-your-token"
+security add-generic-password -s "agent-shell-to-go" -a "channel-id" -w "C0123456789"
+security add-generic-password -s "agent-shell-to-go" -a "app-token" -w "xapp-your-token"
+security add-generic-password -s "agent-shell-to-go" -a "user-id" -w "U0123456789"
+#+end_src
+
+*** Option C: Using .env file (less secure)
+
+Create ~agent-shell-to-go-slack-env-file~ (default: ~~/.doom.d/.env~):
+
+#+begin_example
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_CHANNEL_ID=C0123456789
+SLACK_APP_TOKEN=xapp-your-app-token
+#+end_example
+
+** 3. Enable the Transport
+
+#+begin_src elisp
+(use-package agent-shell-to-go
+  :load-path "~/code/agent-shell-to-go"
+  :after agent-shell
+  :config
+  (agent-shell-to-go-setup))
+#+end_src
+
+Requires the ~websocket~ package (available on MELPA).
+
+For automatic image uploads:
+#+begin_src bash
+brew install fswatch  # macOS
+#+end_src
+
+* Usage
+
+** Thread Commands
+
+Send these in the Slack thread:
+
+| Command       | Description                              |
+|---------------+------------------------------------------|
+| ~!yolo~       | Bypass all permissions (dangerous!)      |
+| ~!safe~       | Accept edits mode                        |
+| ~!plan~       | Plan mode                                |
+| ~!mode~       | Show current mode                        |
+| ~!stop~       | Interrupt the agent                      |
+| ~!restart~    | Kill and restart agent with transcript   |
+| ~!queue~      | Show pending queued messages             |
+| ~!clearqueue~ | Clear all pending queued messages        |
+| ~!latest~     | Jump to bottom of thread                 |
+| ~!debug~      | Show session debug info                  |
+| ~!help~       | Show available commands                  |
+
+** Slash Commands
+
+Use these anywhere in the channel:
+
+| Command                      | Description                                |
+|------------------------------+--------------------------------------------|
+| ~/new-project <name>~        | Create project folder and start agent     |
+| ~/new-agent [folder]~        | Start agent (defaults to channel project) |
+| ~/new-agent-container [folder]~ | Start agent in container                |
+| ~/projects~                  | List open projects from Emacs             |
+
+** Reactions
+
+*** Permission Requests
+
+| Emoji                  | Action       |
+|------------------------+--------------|
+| :white_check_mark: / :+1: | Allow once   |
+| :unlock: / :star:      | Always allow |
+| :x: / :-1:             | Reject       |
+
+*** Message Visibility
+
+| Emoji              | Action                                    |
+|--------------------+-------------------------------------------|
+| :see_no_evil: / :no_bell: | Hide message (remove to unhide)    |
+| :eyes:             | Glance (~500 chars, remove to collapse)   |
+| :book:             | Full read (complete output)               |
+
+*** Feedback
+
+| Emoji     | Action                                              |
+|-----------+-----------------------------------------------------|
+| :heart:   | Send appreciation to agent                          |
+| :bookmark: | Create org-mode TODO from message                  |
+
+* Customization
+
+#+begin_src elisp
+;; Change the .env file location
+(setq agent-shell-to-go-slack-env-file "~/.config/agent-shell/.env")
+
+;; Default folder for /new-agent
+(setq agent-shell-to-go-slack-default-folder "~/code")
+
+;; Custom agent starter function
+(setq agent-shell-to-go-slack-start-agent-function #'my/start-claude-code)
+
+;; Custom new project setup function
+;; Called with (PROJECT-NAME BASE-DIR CALLBACK)
+(setq agent-shell-to-go-slack-new-project-function #'my/new-python-project)
+
+;; Directory for bookmark TODOs
+(setq agent-shell-to-go-slack-todo-directory "~/org/todo/")
+
+;; Image upload rate limit (per minute, nil to disable)
+(setq agent-shell-to-go-slack-image-upload-rate-limit 30)
+
+;; Hide tool outputs by default (use reactions to expand)
+(setq agent-shell-to-go-slack-show-tool-output nil)
+
+;; Per-project channels (default: t)
+(setq agent-shell-to-go-slack-per-project-channels t)
+
+;; Prefix for auto-created channels
+(setq agent-shell-to-go-slack-channel-prefix "agent-")
+#+end_src
+
+* Troubleshooting
+
+** WebSocket keeps disconnecting
+
+If you see repeated reconnect messages:
+
+1. *Events not enabled* - App settings → "Event Subscriptions" → toggle ON
+2. *Missing subscriptions* - Verify ~message.channels~, ~reaction_added~, ~reaction_removed~
+3. *Token expired* - Regenerate app-level token
+
+Debug with:
+#+begin_src elisp
+(setq agent-shell-to-go-debug t)
+#+end_src
+
+** Slack disabled the app
+
+After re-enabling events, reconnect the websocket:
+#+begin_src elisp
+(agent-shell-to-go-slack--websocket-connect)
+#+end_src
+
+** OAuth token expired (Claude Code)
+
+Run ~claude setup-token~ for a long-lived token:
+#+begin_src elisp
+(setenv "CLAUDE_CODE_OAUTH_TOKEN"
+        (string-trim (with-temp-buffer
+                       (insert-file-contents "~/.ssh/claude-oauth-token")
+                       (buffer-string))))
+#+end_src
+
+** Message Limits
+
+Slack's free tier has 90-day message history. Consider a paid workspace for heavy use.
+
+Cleanup old threads:
+#+begin_src elisp
+(agent-shell-to-go-slack-cleanup-old-threads)      ; Current channel
+(agent-shell-to-go-slack-cleanup-all-channels)     ; All project channels
+(agent-shell-to-go-slack-list-threads)             ; See thread ages
+#+end_src

@@ -55,6 +55,10 @@ class ApiClient {
     return !!this.baseUrl && !!this.token;
   }
 
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...options,

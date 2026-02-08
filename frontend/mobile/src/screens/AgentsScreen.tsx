@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -10,9 +10,15 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAgents } from '../hooks/useAgents';
 import { GraphView } from '../components/GraphView';
 import { Agent, api } from '../api/client';
+
+interface Machine {
+  name: string;
+  url: string;
+}
 
 interface AgentsScreenProps {
   selectedAgent: Agent | null;
@@ -24,11 +30,92 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
   const [showActions, setShowActions] = useState(false);
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [showNewDispatcher, setShowNewDispatcher] = useState(false);
+  const [showMachines, setShowMachines] = useState(false);
+  const [showAddMachine, setShowAddMachine] = useState(false);
   const [agentName, setAgentName] = useState('');
   const [agentPath, setAgentPath] = useState('');
   const [agentTask, setAgentTask] = useState('');
   const [dispatcherPath, setDispatcherPath] = useState('');
   const [projects, setProjects] = useState<string[]>([]);
+  const [machines, setMachines] = useState<Machine[]>([]);
+  const [currentMachine, setCurrentMachine] = useState<Machine | null>(null);
+  const [newMachineName, setNewMachineName] = useState('');
+  const [newMachineUrl, setNewMachineUrl] = useState('');
+
+  useEffect(() => {
+    // Small delay to ensure api is configured
+    const timer = setTimeout(() => loadMachines(), 100);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const loadMachines = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('agent_shell_machines');
+      if (stored) {
+        const list: Machine[] = JSON.parse(stored);
+        setMachines(list);
+        // Set current machine from current API config
+        const currentUrl = api.getBaseUrl();
+        const current = list.find(m => m.url === currentUrl);
+        if (current) {
+          setCurrentMachine(current);
+        } else if (currentUrl) {
+          // Add current config as a machine
+          const defaultMachine = { name: 'Default', url: currentUrl };
+          setMachines([defaultMachine, ...list]);
+          setCurrentMachine(defaultMachine);
+          await AsyncStorage.setItem('agent_shell_machines', JSON.stringify([defaultMachine, ...list]));
+        }
+      } else {
+        // Initialize with current config
+        const currentUrl = api.getBaseUrl();
+        if (currentUrl) {
+          const defaultMachine = { name: 'Default', url: currentUrl };
+          setMachines([defaultMachine]);
+          setCurrentMachine(defaultMachine);
+          await AsyncStorage.setItem('agent_shell_machines', JSON.stringify([defaultMachine]));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load machines:', e);
+    }
+  };
+
+  const switchMachine = async (machine: Machine) => {
+    setCurrentMachine(machine);
+    api.configure(machine.url, 'NOAUTH');
+    api.disconnectWebSocket();
+    api.connectWebSocket();
+    setShowMachines(false);
+    refetch();
+  };
+
+  const addMachine = async () => {
+    if (!newMachineName.trim() || !newMachineUrl.trim()) {
+      Alert.alert('Error', 'Name and URL are required');
+      return;
+    }
+    const machine: Machine = { 
+      name: newMachineName.trim(), 
+      url: newMachineUrl.trim().replace(/\/$/, '') // Remove trailing slash
+    };
+    const updated = [...machines, machine];
+    setMachines(updated);
+    await AsyncStorage.setItem('agent_shell_machines', JSON.stringify(updated));
+    setNewMachineName('');
+    setNewMachineUrl('');
+    setShowAddMachine(false);
+    switchMachine(machine);
+  };
+
+  const deleteMachine = async (machine: Machine) => {
+    const updated = machines.filter(m => m.url !== machine.url);
+    setMachines(updated);
+    await AsyncStorage.setItem('agent_shell_machines', JSON.stringify(updated));
+    if (currentMachine?.url === machine.url && updated.length > 0) {
+      switchMachine(updated[0]);
+    }
+  };
 
   const loadProjects = async () => {
     try {
@@ -94,7 +181,13 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Agent Graph</Text>
+        <TouchableOpacity 
+          style={styles.machineSelector}
+          onPress={() => setShowMachines(true)}
+        >
+          <Text style={styles.title}>{currentMachine?.name || 'Agent Graph'}</Text>
+          <Text style={styles.dropdownArrow}>▼</Text>
+        </TouchableOpacity>
         <View style={styles.headerButtons}>
           <TouchableOpacity onPress={refetch} style={styles.headerButton}>
             <Text style={styles.headerButtonText}>↻</Text>
@@ -283,6 +376,117 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
           </View>
         </View>
       </Modal>
+
+      {/* Machine Selector Modal */}
+      <Modal
+        visible={showMachines}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMachines(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowMachines(false)}
+        >
+          <View style={styles.actionsMenu}>
+            <Text style={styles.actionsTitle}>Select Machine</Text>
+            
+            <ScrollView style={styles.machinesList}>
+              {machines.map((machine, i) => (
+                <TouchableOpacity 
+                  key={i}
+                  style={[
+                    styles.machineItem,
+                    currentMachine?.url === machine.url && styles.machineItemActive
+                  ]}
+                  onPress={() => switchMachine(machine)}
+                  onLongPress={() => {
+                    Alert.alert(
+                      'Delete Machine',
+                      `Remove "${machine.name}"?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Delete', style: 'destructive', onPress: () => deleteMachine(machine) }
+                      ]
+                    );
+                  }}
+                >
+                  <Text style={styles.machineName}>{machine.name}</Text>
+                  <Text style={styles.machineUrl}>{machine.url}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => {
+                setShowMachines(false);
+                setShowAddMachine(true);
+              }}
+            >
+              <Text style={styles.actionIcon}>+</Text>
+              <Text style={styles.actionText}>Add Machine</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.cancelButton}
+              onPress={() => setShowMachines(false)}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Add Machine Modal */}
+      <Modal
+        visible={showAddMachine}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAddMachine(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.formModal}>
+            <Text style={styles.formTitle}>Add Machine</Text>
+            
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={newMachineName}
+              onChangeText={setNewMachineName}
+              placeholder="e.g., MacBook, Workstation"
+              placeholderTextColor="#666"
+            />
+            
+            <Text style={styles.label}>Backend URL</Text>
+            <TextInput
+              style={styles.input}
+              value={newMachineUrl}
+              onChangeText={setNewMachineUrl}
+              placeholder="e.g., http://100.x.x.x:8080"
+              placeholderTextColor="#666"
+              autoCapitalize="none"
+              keyboardType="url"
+            />
+            
+            <View style={styles.formButtons}>
+              <TouchableOpacity 
+                style={styles.formCancelButton}
+                onPress={() => setShowAddMachine(false)}
+              >
+                <Text style={styles.formCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.formSubmitButton}
+                onPress={addMachine}
+              >
+                <Text style={styles.formSubmitText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -300,10 +504,43 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#333',
   },
+  machineSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   title: {
     color: '#FFFFFF',
     fontSize: 20,
     fontWeight: '600',
+  },
+  dropdownArrow: {
+    color: '#007AFF',
+    fontSize: 12,
+    marginLeft: 8,
+  },
+  machinesList: {
+    maxHeight: 200,
+    marginBottom: 12,
+  },
+  machineItem: {
+    padding: 12,
+    backgroundColor: '#2D2D2D',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  machineItemActive: {
+    borderColor: '#007AFF',
+    borderWidth: 2,
+  },
+  machineName: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  machineUrl: {
+    color: '#888',
+    fontSize: 12,
+    marginTop: 4,
   },
   headerButtons: {
     flexDirection: 'row',

@@ -5,7 +5,6 @@ import {
   TouchableOpacity, 
   StyleSheet, 
   Dimensions,
-  ScrollView,
   PanResponder,
 } from 'react-native';
 import { Agent } from '../api/client';
@@ -31,7 +30,10 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewProps) {
-  const { width } = Dimensions.get('window');
+  const { width, height } = Dimensions.get('window');
+  const centerX = width / 2;
+  const centerY = height / 2 - 100;
+  
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const offsetRef = useRef({ x: 0, y: 0 });
 
@@ -39,7 +41,6 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gestureState) => {
-        // Only pan if moving more than 5px (to allow taps)
         return Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5;
       },
       onPanResponderMove: (_, gestureState) => {
@@ -57,8 +58,8 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     })
   ).current;
 
-  // Build tree structure and calculate positions
-  const { nodes, edges, bounds } = useMemo(() => {
+  // Build tree structure and calculate positions in a radial layout
+  const { nodes, edges } = useMemo(() => {
     const nodeMap = new Map<string, NodePosition>();
     const edgeList: { from: string; to: string }[] = [];
 
@@ -75,10 +76,11 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       }
     });
 
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-
-    // Layout tree with levels
-    const layoutNode = (agent: Agent, x: number, y: number, level: number) => {
+    // Radial layout - place nodes in concentric circles
+    const layoutRadial = (agent: Agent, cx: number, cy: number, angle: number, radius: number, arcSpan: number) => {
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius;
+      
       const children = childrenOf.get(agent.session_id) || [];
       
       nodeMap.set(agent.session_id, {
@@ -88,49 +90,60 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
         children: children.map(c => c.session_id),
       });
 
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-
       // Add edges to children
       children.forEach(child => {
         edgeList.push({ from: agent.session_id, to: child.session_id });
       });
 
-      // Layout children with wider spacing
-      const childSpacing = 140;
-      const startX = x - (children.length - 1) * childSpacing / 2;
+      // Layout children in an arc
+      if (children.length > 0) {
+        const childRadius = radius + 130;
+        const childArcSpan = Math.min(arcSpan, Math.PI * 0.8); // Limit spread
+        const startAngle = angle - childArcSpan / 2;
+        const angleStep = children.length > 1 ? childArcSpan / (children.length - 1) : 0;
 
-      children.forEach((child, i) => {
-        layoutNode(child, startX + i * childSpacing, y + 120, level + 1);
+        children.forEach((child, i) => {
+          const childAngle = children.length === 1 ? angle : startAngle + angleStep * i;
+          layoutRadial(child, cx, cy, childAngle, childRadius, childArcSpan / children.length);
+        });
+      }
+    };
+
+    // Layout roots
+    if (roots.length === 1) {
+      // Single root at center
+      const root = roots[0];
+      const children = childrenOf.get(root.session_id) || [];
+      
+      nodeMap.set(root.session_id, {
+        x: centerX,
+        y: centerY,
+        agent: root,
+        children: children.map(c => c.session_id),
       });
-    };
 
-    // Layout each root with wide spacing
-    const rootSpacing = 180;
-    const startX = width / 2 - (roots.length - 1) * rootSpacing / 2;
+      // Children spread around in a circle
+      children.forEach((child, i) => {
+        edgeList.push({ from: root.session_id, to: child.session_id });
+        const angle = (2 * Math.PI * i) / children.length - Math.PI / 2; // Start from top
+        layoutRadial(child, centerX, centerY, angle, 140, (2 * Math.PI) / children.length);
+      });
+    } else {
+      // Multiple roots spread in a circle
+      roots.forEach((root, i) => {
+        const angle = (2 * Math.PI * i) / roots.length - Math.PI / 2;
+        layoutRadial(root, centerX, centerY, angle, 0, (2 * Math.PI) / roots.length);
+      });
+    }
 
-    roots.forEach((root, i) => {
-      layoutNode(root, startX + i * rootSpacing, 100, 0);
-    });
-
-    return { 
-      nodes: Array.from(nodeMap.values()), 
-      edges: edgeList,
-      bounds: { minX, maxX, minY, maxY },
-    };
-  }, [agents, width]);
+    return { nodes: Array.from(nodeMap.values()), edges: edgeList };
+  }, [agents, centerX, centerY]);
 
   // Get node position by ID
   const getNodePos = (id: string) => {
     const node = nodes.find(n => n.agent.session_id === id);
     return node ? { x: node.x, y: node.y } : null;
   };
-
-  // Calculate content size for scrolling
-  const contentWidth = Math.max(bounds.maxX - bounds.minX + 200, width);
-  const contentHeight = bounds.maxY - bounds.minY + 300;
 
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
@@ -145,57 +158,36 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
           },
         ]}
       >
-        {/* Draw edges first (behind nodes) */}
+        {/* Draw edges as straight lines */}
         <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          {edges.map((edge, i) => {
+          {edges.map((edge) => {
             const from = getNodePos(edge.from);
             const to = getNodePos(edge.to);
             if (!from || !to) return null;
 
-            // Draw vertical then horizontal lines (L-shaped connector)
-            const fromY = from.y + 60; // Bottom of from node
-            const toY = to.y - 5; // Top of to node
-            const midY = fromY + (toY - fromY) / 2;
+            const dx = to.x - from.x;
+            const dy = to.y - from.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
 
             return (
-              <View key={`edge-${edge.from}-${edge.to}`}>
-                {/* Vertical line from parent */}
-                <View
-                  style={[
-                    styles.edge,
-                    {
-                      left: from.x,
-                      top: fromY,
-                      width: 2,
-                      height: midY - fromY,
-                    },
-                  ]}
-                />
-                {/* Horizontal line */}
-                <View
-                  style={[
-                    styles.edge,
-                    {
-                      left: Math.min(from.x, to.x),
-                      top: midY,
-                      width: Math.abs(to.x - from.x) + 2,
-                      height: 2,
-                    },
-                  ]}
-                />
-                {/* Vertical line to child */}
-                <View
-                  style={[
-                    styles.edge,
-                    {
-                      left: to.x,
-                      top: midY,
-                      width: 2,
-                      height: toY - midY,
-                    },
-                  ]}
-                />
-              </View>
+              <View
+                key={`edge-${edge.from}-${edge.to}`}
+                style={[
+                  styles.edge,
+                  {
+                    left: from.x,
+                    top: from.y,
+                    width: length,
+                    transform: [
+                      { translateX: 0 },
+                      { translateY: -1 },
+                      { rotate: `${angle}deg` },
+                    ],
+                    transformOrigin: 'left center',
+                  },
+                ]}
+              />
             );
           })}
         </View>
@@ -214,7 +206,7 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
                 styles.node,
                 {
                   left: node.x - 55,
-                  top: node.y,
+                  top: node.y - 30,
                   borderColor: isSelected ? '#007AFF' : statusColor,
                   backgroundColor: isSelected ? '#1a3a5c' : '#1E1E1E',
                 },

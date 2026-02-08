@@ -194,13 +194,17 @@ DATA is an alist that will be JSON-encoded."
 (defun agent-shell-to-go-mobile--on-send-command (orig-fn &rest args)
   "Advice for agent-shell--send-command. Send user message to mobile backend.
 ORIG-FN is the original function, ARGS are its arguments."
-  (when (and agent-shell-to-go-mobile-mode
-             agent-shell-to-go-mobile--session-id)
-    (let ((prompt (plist-get args :prompt)))
-      (when prompt
-        (agent-shell-to-go-mobile--send-message "user" prompt)
-        (agent-shell-to-go-mobile--send-status "processing")))
-    (setq agent-shell-to-go-mobile--current-agent-message nil))
+  ;; Get buffer from current buffer (send-command is called in the agent buffer)
+  (let ((buffer (current-buffer)))
+    (when (and (buffer-live-p buffer)
+               (buffer-local-value 'agent-shell-to-go-mobile-mode buffer)
+               (buffer-local-value 'agent-shell-to-go-mobile--session-id buffer))
+      (let ((prompt (plist-get args :prompt)))
+        (when prompt
+          (with-current-buffer buffer
+            (agent-shell-to-go-mobile--send-message "user" prompt)
+            (agent-shell-to-go-mobile--send-status "processing")
+            (setq agent-shell-to-go-mobile--current-agent-message nil))))))
   (apply orig-fn args))
 
 (defun agent-shell-to-go-mobile--on-notification (orig-fn &rest args)
@@ -319,6 +323,11 @@ ORIG-FN is the original function, ARGS are its arguments."
   ;; Send spawn event
   (agent-shell-to-go-mobile--send-spawn)
   
+  ;; Connect WebSocket if not already connected
+  (unless (and agent-shell-to-go-mobile--websocket
+               (websocket-openp agent-shell-to-go-mobile--websocket))
+    (agent-shell-to-go-mobile--websocket-connect))
+  
   (agent-shell-to-go-mobile--debug "enabled for %s (session: %s)"
                                    (buffer-name)
                                    agent-shell-to-go-mobile--session-id))
@@ -339,12 +348,13 @@ ORIG-FN is the original function, ARGS are its arguments."
   (setq agent-shell-to-go-mobile--active-buffers
         (delete (current-buffer) agent-shell-to-go-mobile--active-buffers))
   
-  ;; Remove advice if no more buffers
+  ;; Remove advice and disconnect WebSocket if no more buffers
   (unless agent-shell-to-go-mobile--active-buffers
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go-mobile--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go-mobile--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go-mobile--on-request)
-    (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go-mobile--on-heartbeat-stop))
+    (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go-mobile--on-heartbeat-stop)
+    (agent-shell-to-go-mobile--websocket-disconnect))
   
   (agent-shell-to-go-mobile--debug "disabled"))
 
@@ -390,6 +400,145 @@ View and interact with agents from the mobile app."
       (if (and (equal status "200") (equal body "ok"))
           (message "Connection successful: %s" agent-shell-to-go-mobile-backend-url)
         (message "Connection failed: HTTP %s - %s" status body)))))
+
+;;; WebSocket client for receiving messages from mobile app
+
+(defvar agent-shell-to-go-mobile--websocket nil
+  "WebSocket connection to the mobile backend.")
+
+(defvar agent-shell-to-go-mobile--websocket-reconnect-timer nil
+  "Timer for reconnecting WebSocket.")
+
+(defun agent-shell-to-go-mobile--websocket-connect ()
+  "Connect to the mobile backend WebSocket to receive messages."
+  (when agent-shell-to-go-mobile--websocket
+    (ignore-errors (websocket-close agent-shell-to-go-mobile--websocket)))
+  (let* ((token (agent-shell-to-go-mobile--load-token))
+         (ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
+                         "/ws?token=" (url-hexify-string (or token "")))))
+    (condition-case err
+        (setq agent-shell-to-go-mobile--websocket
+              (websocket-open ws-url
+                              :on-message #'agent-shell-to-go-mobile--on-websocket-message
+                              :on-close (lambda (_ws)
+                                          (agent-shell-to-go-mobile--debug "WebSocket closed")
+                                          (agent-shell-to-go-mobile--websocket-schedule-reconnect))
+                              :on-error (lambda (_ws _type err)
+                                          (agent-shell-to-go-mobile--debug "WebSocket error: %s" err))))
+      (error
+       (agent-shell-to-go-mobile--debug "WebSocket connect failed: %s" err)
+       (agent-shell-to-go-mobile--websocket-schedule-reconnect)))))
+
+(defun agent-shell-to-go-mobile--websocket-schedule-reconnect ()
+  "Schedule WebSocket reconnection."
+  (when agent-shell-to-go-mobile--websocket-reconnect-timer
+    (cancel-timer agent-shell-to-go-mobile--websocket-reconnect-timer))
+  (when agent-shell-to-go-mobile--active-buffers
+    (setq agent-shell-to-go-mobile--websocket-reconnect-timer
+          (run-with-timer 5 nil #'agent-shell-to-go-mobile--websocket-connect))))
+
+(defun agent-shell-to-go-mobile--websocket-disconnect ()
+  "Disconnect WebSocket."
+  (when agent-shell-to-go-mobile--websocket-reconnect-timer
+    (cancel-timer agent-shell-to-go-mobile--websocket-reconnect-timer)
+    (setq agent-shell-to-go-mobile--websocket-reconnect-timer nil))
+  (when agent-shell-to-go-mobile--websocket
+    (ignore-errors (websocket-close agent-shell-to-go-mobile--websocket))
+    (setq agent-shell-to-go-mobile--websocket nil)))
+
+(defun agent-shell-to-go-mobile--on-websocket-message (ws frame)
+  "Handle incoming WebSocket FRAME from mobile backend."
+  (condition-case err
+      (let* ((payload (websocket-frame-text frame))
+             (data (json-read-from-string payload))
+             (type (alist-get 'type data))
+             (event-payload (alist-get 'payload data)))
+        (agent-shell-to-go-mobile--debug "WebSocket message: %s" type)
+        (pcase type
+          ("send_request"
+           (agent-shell-to-go-mobile--handle-send-request event-payload))))
+    (error
+     (agent-shell-to-go-mobile--debug "WebSocket message error: %s" err))))
+
+(defun agent-shell-to-go-mobile--handle-send-request (payload)
+  "Handle a send_request PAYLOAD from mobile app.
+Injects the message into the appropriate agent-shell buffer."
+  (let* ((session-id (alist-get 'session_id payload))
+         (content (alist-get 'content payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (if buffer
+        (progn
+          (agent-shell-to-go-mobile--debug "Injecting message to %s: %s"
+                                           (buffer-name buffer) content)
+          (with-current-buffer buffer
+            (agent-shell-to-go-mobile--inject-message content)))
+      (agent-shell-to-go-mobile--debug "No buffer found for session: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--find-buffer-by-session-id (session-id)
+  "Find the agent-shell buffer with SESSION-ID."
+  (cl-find-if
+   (lambda (buf)
+     (and (buffer-live-p buf)
+          (equal session-id
+                 (buffer-local-value 'agent-shell-to-go-mobile--session-id buf))))
+   agent-shell-to-go-mobile--active-buffers))
+
+(defun agent-shell-to-go-mobile--inject-message (text)
+  "Inject TEXT from mobile app into the current agent-shell buffer."
+  (when (derived-mode-p 'agent-shell-mode)
+    (if (shell-maker-busy)
+        ;; Shell is busy - queue the request
+        (progn
+          (agent-shell--enqueue-request :prompt text)
+          (agent-shell-to-go-mobile--debug "Queued message (agent busy): %s" text))
+      ;; Shell is ready - inject immediately
+      (save-excursion
+        (goto-char (point-max))
+        (insert text))
+      (goto-char (point-max))
+      (call-interactively #'shell-maker-submit))))
+
+;;; Integration with meta-agent-shell
+
+(defvar agent-shell-to-go-mobile--spawner-session-id nil
+  "Session ID of the agent that is spawning a new agent.
+Set temporarily during spawn to pass parent info to the new agent.")
+
+(defun agent-shell-to-go-mobile--before-spawn-hook ()
+  "Capture the spawner's session ID before a new agent is created."
+  (when (and agent-shell-to-go-mobile-mode
+             agent-shell-to-go-mobile--session-id)
+    (setq agent-shell-to-go-mobile--spawner-session-id
+          agent-shell-to-go-mobile--session-id)))
+
+(defun agent-shell-to-go-mobile--after-spawn-hook ()
+  "Enable mobile mode on newly spawned agent with parent relationship."
+  (when (and (derived-mode-p 'agent-shell-mode)
+             agent-shell-to-go-mobile-backend-url
+             (agent-shell-to-go-mobile--load-token))
+    ;; Enable the mode (this will send spawn event)
+    (agent-shell-to-go-mobile-mode 1)
+    ;; If we have a spawner, update the parent relationship
+    (when agent-shell-to-go-mobile--spawner-session-id
+      (agent-shell-to-go-mobile--post
+       "/events/agent-spawn"
+       `((session_id . ,agent-shell-to-go-mobile--session-id)
+         (buffer_name . ,(buffer-name))
+         (project . ,(agent-shell-to-go-mobile--get-project-name))
+         (parent_session_id . ,agent-shell-to-go-mobile--spawner-session-id)
+         (timestamp . ,(agent-shell-to-go-mobile--iso-timestamp))))
+      (setq agent-shell-to-go-mobile--spawner-session-id nil))))
+
+;;;###autoload
+(defun agent-shell-to-go-mobile-setup-meta-agent-shell ()
+  "Set up integration with meta-agent-shell for tracking spawn hierarchy.
+Call this after both agent-shell-to-go-mobile and meta-agent-shell are loaded."
+  (when (boundp 'meta-agent-shell-before-spawn-hook)
+    (add-hook 'meta-agent-shell-before-spawn-hook
+              #'agent-shell-to-go-mobile--before-spawn-hook))
+  (when (boundp 'meta-agent-shell-after-spawn-hook)
+    (add-hook 'meta-agent-shell-after-spawn-hook
+              #'agent-shell-to-go-mobile--after-spawn-hook)))
 
 (provide 'agent-shell-to-go-mobile)
 ;;; agent-shell-to-go-mobile.el ends here

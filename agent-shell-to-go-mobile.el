@@ -456,7 +456,15 @@ View and interact with agents from the mobile app."
         (agent-shell-to-go-mobile--debug "WebSocket message: %s" type)
         (pcase type
           ("send_request"
-           (agent-shell-to-go-mobile--handle-send-request event-payload))))
+           (agent-shell-to-go-mobile--handle-send-request event-payload))
+          ("stop_request"
+           (agent-shell-to-go-mobile--handle-stop-request event-payload))
+          ("close_request"
+           (agent-shell-to-go-mobile--handle-close-request event-payload))
+          ("new_agent_request"
+           (agent-shell-to-go-mobile--handle-new-agent-request event-payload))
+          ("new_dispatcher_request"
+           (agent-shell-to-go-mobile--handle-new-dispatcher-request event-payload))))
     (error
      (agent-shell-to-go-mobile--debug "WebSocket message error: %s" err))))
 
@@ -497,6 +505,56 @@ Injects the message into the appropriate agent-shell buffer."
         (insert text))
       (goto-char (point-max))
       (call-interactively #'shell-maker-submit))))
+
+(defun agent-shell-to-go-mobile--handle-stop-request (payload)
+  "Handle a stop_request PAYLOAD from mobile app.
+Interrupts the agent in the appropriate buffer."
+  (let* ((session-id (alist-get 'session_id payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (if buffer
+        (progn
+          (agent-shell-to-go-mobile--debug "Stopping agent: %s" (buffer-name buffer))
+          (with-current-buffer buffer
+            (when (fboundp 'agent-shell-interrupt)
+              (agent-shell-interrupt t)))) ; force=t to skip prompt
+      (agent-shell-to-go-mobile--debug "No buffer found for stop: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--handle-close-request (payload)
+  "Handle a close_request PAYLOAD from mobile app.
+Kills the agent buffer."
+  (let* ((session-id (alist-get 'session_id payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (if buffer
+        (progn
+          (agent-shell-to-go-mobile--debug "Closing agent: %s" (buffer-name buffer))
+          (kill-buffer buffer))
+      (agent-shell-to-go-mobile--debug "No buffer found for close: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--handle-new-agent-request (payload)
+  "Handle a new_agent_request PAYLOAD from mobile app.
+Spawns a new named agent."
+  (let* ((name (alist-get 'name payload))
+         (path (alist-get 'path payload))
+         (task (alist-get 'task payload)))
+    (agent-shell-to-go-mobile--debug "Spawning agent: %s in %s" name path)
+    (if (and (fboundp 'meta-agent-shell-start-named-agent) path name)
+        (meta-agent-shell-start-named-agent path name task)
+      ;; Fallback if meta-agent-shell not available
+      (when (and path (file-directory-p path))
+        (let ((default-directory path))
+          (agent-shell))))))
+
+(defun agent-shell-to-go-mobile--handle-new-dispatcher-request (payload)
+  "Handle a new_dispatcher_request PAYLOAD from mobile app.
+Spawns a new dispatcher for a project."
+  (let ((path (alist-get 'path payload)))
+    (agent-shell-to-go-mobile--debug "Spawning dispatcher for: %s" path)
+    (if (fboundp 'meta-agent-shell-start-dispatcher)
+        (meta-agent-shell-start-dispatcher path)
+      ;; Fallback
+      (when (and path (file-directory-p path))
+        (let ((default-directory path))
+          (agent-shell))))))
 
 ;;; Integration with meta-agent-shell
 

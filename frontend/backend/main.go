@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -172,6 +174,17 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/messages", s.handleGetMessages).Methods("GET", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST", "OPTIONS")
+	
+	// Actions for spawning new agents
+	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/actions/new-dispatcher", s.handleNewDispatcher).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/actions/projects", s.handleListProjects).Methods("GET", "OPTIONS")
+	
+	// File explorer
+	s.router.HandleFunc("/files/list", s.handleListFiles).Methods("GET", "OPTIONS")
+	s.router.HandleFunc("/files/read", s.handleReadFile).Methods("GET", "OPTIONS")
 
 	// WebSocket for real-time updates
 	s.router.HandleFunc("/ws", s.handleWebSocket)
@@ -475,6 +488,292 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
+}
+
+func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	log.Printf("stop request for session %s", sessionID)
+
+	// Broadcast as a "stop_request" event - Emacs will interrupt the agent
+	s.broadcast(WSEvent{
+		Type: "stop_request",
+		Payload: map[string]string{
+			"session_id": sessionID,
+		},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopping"})
+}
+
+func (s *Server) handleCloseAgent(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	log.Printf("close request for session %s", sessionID)
+
+	// Broadcast as a "close_request" event - Emacs will kill the buffer
+	s.broadcast(WSEvent{
+		Type: "close_request",
+		Payload: map[string]string{
+			"session_id": sessionID,
+		},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "closing"})
+}
+
+func (s *Server) handleNewAgent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		Task    string `json:"task"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("new agent request: name=%s path=%s", req.Name, req.Path)
+
+	s.broadcast(WSEvent{
+		Type: "new_agent_request",
+		Payload: map[string]string{
+			"name": req.Name,
+			"path": req.Path,
+			"task": req.Task,
+		},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "spawning"})
+}
+
+func (s *Server) handleNewDispatcher(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("new dispatcher request: path=%s", req.Path)
+
+	s.broadcast(WSEvent{
+		Type: "new_dispatcher_request",
+		Payload: map[string]string{
+			"path": req.Path,
+		},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "spawning"})
+}
+
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Security: only allow listing within known project directories
+	// Get the list of valid project paths from the database
+	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var validPaths []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err == nil {
+			validPaths = append(validPaths, project)
+		}
+	}
+
+	// Check if the requested path is within a valid project
+	isValid := false
+	for _, vp := range validPaths {
+		if strings.HasPrefix(path, vp) {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		http.Error(w, "path not within a known project", http.StatusForbidden)
+		return
+	}
+
+	// Read directory
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	type FileEntry struct {
+		Name  string `json:"name"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	}
+
+	var files []FileEntry
+	for _, entry := range entries {
+		// Skip hidden files except .claude
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".claude" {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		files = append(files, FileEntry{
+			Name:  entry.Name(),
+			IsDir: entry.IsDir(),
+			Size:  info.Size(),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"files": files, "path": path})
+}
+
+func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Security: only allow reading within known project directories
+	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var validPaths []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err == nil {
+			validPaths = append(validPaths, project)
+		}
+	}
+
+	isValid := false
+	for _, vp := range validPaths {
+		if strings.HasPrefix(path, vp) {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		http.Error(w, "path not within a known project", http.StatusForbidden)
+		return
+	}
+
+	// Check file info
+	info, err := os.Stat(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	if info.IsDir() {
+		http.Error(w, "cannot read directory", http.StatusBadRequest)
+		return
+	}
+
+	// Determine content type
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	isImage := ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "webp" || ext == "svg"
+	isText := ext == "txt" || ext == "md" || ext == "org" || ext == "el" || ext == "py" || ext == "js" || 
+		ext == "ts" || ext == "tsx" || ext == "jsx" || ext == "go" || ext == "rs" || ext == "json" || 
+		ext == "yaml" || ext == "yml" || ext == "toml" || ext == "sh" || ext == "bash" || ext == "zsh" ||
+		ext == "css" || ext == "html" || ext == "xml" || ext == "sql" || ext == "c" || ext == "cpp" ||
+		ext == "h" || ext == "hpp" || ext == "java" || ext == "rb" || ext == "lua" || ext == ""
+
+	// Limit file size
+	maxSize := int64(1024 * 1024) // 1MB for text
+	if isImage {
+		maxSize = 10 * 1024 * 1024 // 10MB for images
+	}
+
+	if info.Size() > maxSize {
+		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if isImage {
+		// Return as base64 for images
+		contentType := "image/" + ext
+		if ext == "svg" {
+			contentType = "image/svg+xml"
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"type":    "image",
+			"content": encoded,
+			"mime":    contentType,
+			"path":    path,
+		})
+	} else if isText {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"type":    "text",
+			"content": string(data),
+			"path":    path,
+		})
+	} else {
+		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
+	}
+}
+
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	// This will be populated by Emacs via a request/response pattern
+	// For now, broadcast a request and return a placeholder
+	// TODO: implement request/response pattern for this
+	
+	s.broadcast(WSEvent{
+		Type: "list_projects_request",
+		Payload: map[string]string{},
+	})
+
+	// Return the unique projects we know about from agents
+	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL ORDER BY project`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var projects []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err == nil {
+			projects = append(projects, project)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"projects": projects})
 }
 
 // WebSocket handling

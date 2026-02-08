@@ -1,5 +1,13 @@
-import React, { useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
+import React, { useMemo, useState, useRef } from 'react';
+import { 
+  View, 
+  Text, 
+  TouchableOpacity, 
+  StyleSheet, 
+  Dimensions,
+  ScrollView,
+  PanResponder,
+} from 'react-native';
 import { Agent } from '../api/client';
 
 interface GraphViewProps {
@@ -23,12 +31,34 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewProps) {
-  const { width, height } = Dimensions.get('window');
-  const centerX = width / 2;
-  const centerY = height / 2 - 50;
+  const { width } = Dimensions.get('window');
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const offsetRef = useRef({ x: 0, y: 0 });
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        // Only pan if moving more than 5px (to allow taps)
+        return Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        setOffset({
+          x: offsetRef.current.x + gestureState.dx,
+          y: offsetRef.current.y + gestureState.dy,
+        });
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        offsetRef.current = {
+          x: offsetRef.current.x + gestureState.dx,
+          y: offsetRef.current.y + gestureState.dy,
+        };
+      },
+    })
+  ).current;
 
   // Build tree structure and calculate positions
-  const { nodes, edges } = useMemo(() => {
+  const { nodes, edges, bounds } = useMemo(() => {
     const nodeMap = new Map<string, NodePosition>();
     const edgeList: { from: string; to: string }[] = [];
 
@@ -45,8 +75,10 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       }
     });
 
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+
     // Layout tree with levels
-    const layoutNode = (agent: Agent, x: number, y: number, level: number, siblingIndex: number, siblingCount: number) => {
+    const layoutNode = (agent: Agent, x: number, y: number, level: number) => {
       const children = childrenOf.get(agent.session_id) || [];
       
       nodeMap.set(agent.session_id, {
@@ -56,30 +88,39 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
         children: children.map(c => c.session_id),
       });
 
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+
       // Add edges to children
       children.forEach(child => {
         edgeList.push({ from: agent.session_id, to: child.session_id });
       });
 
-      // Layout children
-      const childSpacing = Math.min(160, (width - 40) / Math.max(children.length, 1));
+      // Layout children with wider spacing
+      const childSpacing = 140;
       const startX = x - (children.length - 1) * childSpacing / 2;
 
       children.forEach((child, i) => {
-        layoutNode(child, startX + i * childSpacing, y + 140, level + 1, i, children.length);
+        layoutNode(child, startX + i * childSpacing, y + 120, level + 1);
       });
     };
 
-    // Layout each root
-    const rootSpacing = Math.min(200, (width - 40) / Math.max(roots.length, 1));
-    const startX = centerX - (roots.length - 1) * rootSpacing / 2;
+    // Layout each root with wide spacing
+    const rootSpacing = 180;
+    const startX = width / 2 - (roots.length - 1) * rootSpacing / 2;
 
     roots.forEach((root, i) => {
-      layoutNode(root, startX + i * rootSpacing, 80, 0, i, roots.length);
+      layoutNode(root, startX + i * rootSpacing, 100, 0);
     });
 
-    return { nodes: Array.from(nodeMap.values()), edges: edgeList };
-  }, [agents, width, centerX]);
+    return { 
+      nodes: Array.from(nodeMap.values()), 
+      edges: edgeList,
+      bounds: { minX, maxX, minY, maxY },
+    };
+  }, [agents, width]);
 
   // Get node position by ID
   const getNodePos = (id: string) => {
@@ -87,77 +128,118 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     return node ? { x: node.x, y: node.y } : null;
   };
 
-  return (
-    <View style={styles.container}>
-      {/* Draw edges first (behind nodes) */}
-      <View style={StyleSheet.absoluteFill}>
-        {edges.map((edge, i) => {
-          const from = getNodePos(edge.from);
-          const to = getNodePos(edge.to);
-          if (!from || !to) return null;
+  // Calculate content size for scrolling
+  const contentWidth = Math.max(bounds.maxX - bounds.minX + 200, width);
+  const contentHeight = bounds.maxY - bounds.minY + 300;
 
-          // Draw a simple line using a rotated view
-          const dx = to.x - from.x;
-          const dy = to.y - from.y;
-          const length = Math.sqrt(dx * dx + dy * dy);
-          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  return (
+    <View style={styles.container} {...panResponder.panHandlers}>
+      <View 
+        style={[
+          styles.content,
+          {
+            transform: [
+              { translateX: offset.x },
+              { translateY: offset.y },
+            ],
+          },
+        ]}
+      >
+        {/* Draw edges first (behind nodes) */}
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+          {edges.map((edge, i) => {
+            const from = getNodePos(edge.from);
+            const to = getNodePos(edge.to);
+            if (!from || !to) return null;
+
+            // Draw vertical then horizontal lines (L-shaped connector)
+            const fromY = from.y + 60; // Bottom of from node
+            const toY = to.y - 5; // Top of to node
+            const midY = fromY + (toY - fromY) / 2;
+
+            return (
+              <View key={i}>
+                {/* Vertical line from parent */}
+                <View
+                  style={[
+                    styles.edge,
+                    {
+                      left: from.x,
+                      top: fromY,
+                      width: 2,
+                      height: midY - fromY,
+                    },
+                  ]}
+                />
+                {/* Horizontal line */}
+                <View
+                  style={[
+                    styles.edge,
+                    {
+                      left: Math.min(from.x, to.x),
+                      top: midY,
+                      width: Math.abs(to.x - from.x) + 2,
+                      height: 2,
+                    },
+                  ]}
+                />
+                {/* Vertical line to child */}
+                <View
+                  style={[
+                    styles.edge,
+                    {
+                      left: to.x,
+                      top: midY,
+                      width: 2,
+                      height: toY - midY,
+                    },
+                  ]}
+                />
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Draw nodes */}
+        {nodes.map(node => {
+          const isSelected = selectedAgent?.session_id === node.agent.session_id;
+          const statusColor = STATUS_COLORS[node.agent.status] || STATUS_COLORS.ready;
+          const name = node.agent.buffer_name.split(' @ ')[0] || node.agent.buffer_name;
+          const shortName = name.length > 15 ? name.slice(0, 12) + '...' : name;
 
           return (
-            <View
-              key={i}
+            <TouchableOpacity
+              key={node.agent.session_id}
               style={[
-                styles.edge,
+                styles.node,
                 {
-                  left: from.x,
-                  top: from.y + 30,
-                  width: length,
-                  transform: [{ rotate: `${angle}deg` }],
-                  transformOrigin: 'left center',
+                  left: node.x - 55,
+                  top: node.y,
+                  borderColor: isSelected ? '#007AFF' : statusColor,
+                  backgroundColor: isSelected ? '#1a3a5c' : '#1E1E1E',
                 },
               ]}
-            />
+              onPress={() => onSelectAgent(node.agent)}
+            >
+              <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+              <Text style={styles.nodeName} numberOfLines={1}>{shortName}</Text>
+              <Text style={styles.nodeProject} numberOfLines={1}>
+                {node.agent.project.split('/').pop()}
+              </Text>
+            </TouchableOpacity>
           );
         })}
       </View>
-
-      {/* Draw nodes */}
-      {nodes.map(node => {
-        const isSelected = selectedAgent?.session_id === node.agent.session_id;
-        const statusColor = STATUS_COLORS[node.agent.status] || STATUS_COLORS.ready;
-        const name = node.agent.buffer_name.split(' @ ')[0] || node.agent.buffer_name;
-        const shortName = name.length > 15 ? name.slice(0, 12) + '...' : name;
-
-        return (
-          <TouchableOpacity
-            key={node.agent.session_id}
-            style={[
-              styles.node,
-              {
-                left: node.x - 50,
-                top: node.y,
-                borderColor: isSelected ? '#007AFF' : statusColor,
-                backgroundColor: isSelected ? '#1a3a5c' : '#1E1E1E',
-              },
-            ]}
-            onPress={() => onSelectAgent(node.agent)}
-          >
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-            <Text style={styles.nodeName} numberOfLines={1}>{shortName}</Text>
-            <Text style={styles.nodeProject}>{node.agent.project}</Text>
-            {node.agent.last_message ? (
-              <Text style={styles.nodePreview} numberOfLines={1}>
-                {node.agent.last_message.slice(0, 30)}...
-              </Text>
-            ) : null}
-          </TouchableOpacity>
-        );
-      })}
 
       {agents.length === 0 && (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>No agents running</Text>
           <Text style={styles.emptyHint}>Start an agent in Emacs to see it here</Text>
         </View>
+      )}
+
+      {agents.length > 0 && (
+        <Text style={styles.hint}>Drag to pan</Text>
       )}
     </View>
   );
@@ -167,6 +249,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#121212',
+    overflow: 'hidden',
+  },
+  content: {
+    flex: 1,
   },
   edge: {
     position: 'absolute',
@@ -175,7 +261,7 @@ const styles = StyleSheet.create({
   },
   node: {
     position: 'absolute',
-    width: 100,
+    width: 110,
     padding: 10,
     borderRadius: 12,
     borderWidth: 2,
@@ -189,23 +275,17 @@ const styles = StyleSheet.create({
   },
   nodeName: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     textAlign: 'center',
   },
   nodeProject: {
     color: '#888888',
-    fontSize: 10,
+    fontSize: 9,
     marginTop: 2,
   },
-  nodePreview: {
-    color: '#666666',
-    fontSize: 9,
-    marginTop: 4,
-    textAlign: 'center',
-  },
   empty: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -218,5 +298,12 @@ const styles = StyleSheet.create({
     color: '#888888',
     fontSize: 14,
     marginTop: 8,
+  },
+  hint: {
+    position: 'absolute',
+    bottom: 10,
+    alignSelf: 'center',
+    color: '#555',
+    fontSize: 12,
   },
 });

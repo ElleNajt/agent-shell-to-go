@@ -26,6 +26,19 @@ export interface WSEvent {
   payload: any;
 }
 
+export interface FileEntry {
+  name: string;
+  is_dir: boolean;
+  size: number;
+}
+
+export interface FileContent {
+  type: 'text' | 'image';
+  content: string;
+  path: string;
+  mime?: string;
+}
+
 class ApiClient {
   private baseUrl: string = '';
   private token: string = '';
@@ -77,6 +90,48 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ content }),
     });
+  }
+
+  async stopAgent(sessionId: string): Promise<void> {
+    await this.request(`/agents/${encodeURIComponent(sessionId)}/stop`, {
+      method: 'POST',
+    });
+  }
+
+  async closeAgent(sessionId: string): Promise<void> {
+    await this.request(`/agents/${encodeURIComponent(sessionId)}/close`, {
+      method: 'POST',
+    });
+  }
+
+  async newAgent(name: string, path: string, task?: string): Promise<void> {
+    await this.request('/actions/new-agent', {
+      method: 'POST',
+      body: JSON.stringify({ name, path, task: task || '' }),
+    });
+  }
+
+  async newDispatcher(path: string): Promise<void> {
+    await this.request('/actions/new-dispatcher', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  async getProjects(): Promise<string[]> {
+    const data = await this.request<{ projects: string[] | null }>('/actions/projects');
+    return data.projects || [];
+  }
+
+  async listFiles(path: string): Promise<{ files: FileEntry[], path: string }> {
+    const data = await this.request<{ files: FileEntry[] | null, path: string }>(
+      `/files/list?path=${encodeURIComponent(path)}`
+    );
+    return { files: data.files || [], path: data.path };
+  }
+
+  async readFile(path: string): Promise<FileContent> {
+    return this.request<FileContent>(`/files/read?path=${encodeURIComponent(path)}`);
   }
 
   connectWebSocket() {

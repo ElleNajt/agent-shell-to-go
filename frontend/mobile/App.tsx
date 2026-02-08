@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaView, StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { api } from './src/api/client';
@@ -75,27 +76,29 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
-      
-      {screen === 'settings' && (
-        <SettingsScreen onConfigured={handleConfigured} />
-      )}
-      
-      {screen === 'agents' && (
-        <AgentsScreen 
-          selectedAgent={selectedAgent}
-          onSelectAgent={handleSelectAgent}
-        />
-      )}
-      
-      {screen === 'chat' && selectedAgent && (
-        <ChatScreen 
-          agent={selectedAgent}
-          onBack={handleBackFromChat}
-        />
-      )}
-    </SafeAreaView>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+        <StatusBar style="light" />
+        
+        {screen === 'settings' && (
+          <SettingsScreen onConfigured={handleConfigured} />
+        )}
+        
+        {screen === 'agents' && (
+          <AgentsScreen 
+            selectedAgent={selectedAgent}
+            onSelectAgent={handleSelectAgent}
+          />
+        )}
+        
+        {screen === 'chat' && selectedAgent && (
+          <ChatScreen 
+            agent={selectedAgent}
+            onBack={handleBackFromChat}
+          />
+        )}
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 

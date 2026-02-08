@@ -9,9 +9,12 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
+  Modal,
 } from 'react-native';
 import { useMessages } from '../hooks/useMessages';
-import { Agent, Message } from '../api/client';
+import { Agent, Message, api } from '../api/client';
+import { FileExplorerScreen } from './FileExplorerScreen';
 
 interface ChatScreenProps {
   agent: Agent;
@@ -21,6 +24,8 @@ interface ChatScreenProps {
 export function ChatScreen({ agent, onBack }: ChatScreenProps) {
   const { messages, loading, error, sending, sendMessage } = useMessages(agent.session_id);
   const [inputText, setInputText] = useState('');
+  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
+  const [showFileExplorer, setShowFileExplorer] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
   // Scroll to bottom when new messages arrive
@@ -39,23 +44,98 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     }
   };
 
+  const handleStop = async () => {
+    try {
+      await api.stopAgent(agent.session_id);
+    } catch (e) {
+      Alert.alert('Error', 'Failed to stop agent');
+    }
+  };
+
+  const handleClose = () => {
+    Alert.alert(
+      'Close Agent',
+      `Are you sure you want to close "${agent.buffer_name.split(' @ ')[0]}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Close',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.closeAgent(agent.session_id);
+              onBack();
+            } catch (e) {
+              Alert.alert('Error', 'Failed to close agent');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const toggleToolExpanded = (id: number) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isUser = item.role === 'user';
     const isTool = item.role === 'tool';
+    const isExpanded = expandedTools.has(item.id);
+
+    // For tool messages, show collapsed by default
+    if (isTool) {
+      const isRunning = item.content.startsWith('[RUNNING]');
+      const isCompleted = item.content.startsWith('[COMPLETED]');
+      const isFailed = item.content.startsWith('[FAILED]');
+      
+      // Extract the command/title (first line or bracket content)
+      const firstLine = item.content.split('\n')[0];
+      const preview = firstLine.length > 60 ? firstLine.slice(0, 57) + '...' : firstLine;
+      
+      return (
+        <TouchableOpacity 
+          style={[styles.messageContainer, styles.toolMessage]}
+          onPress={() => toggleToolExpanded(item.id)}
+          activeOpacity={0.7}
+        >
+          <View style={styles.toolHeader}>
+            <Text style={styles.toolIcon}>
+              {isRunning ? '⏳' : isCompleted ? '✓' : isFailed ? '✗' : '🔧'}
+            </Text>
+            <Text style={[
+              styles.toolPreview,
+              isCompleted && styles.toolCompleted,
+              isFailed && styles.toolFailed,
+            ]} numberOfLines={isExpanded ? undefined : 1}>
+              {isExpanded ? item.content : preview}
+            </Text>
+            <Text style={styles.expandIcon}>{isExpanded ? '▼' : '▶'}</Text>
+          </View>
+          {!isExpanded && item.content.includes('\n') && (
+            <Text style={styles.moreIndicator}>tap to expand</Text>
+          )}
+        </TouchableOpacity>
+      );
+    }
 
     return (
       <View style={[
         styles.messageContainer,
         isUser ? styles.userMessage : styles.agentMessage,
-        isTool && styles.toolMessage,
       ]}>
         <Text style={styles.roleLabel}>
-          {isUser ? 'You' : isTool ? 'Tool' : 'Agent'}
+          {isUser ? 'You' : 'Agent'}
         </Text>
-        <Text style={[
-          styles.messageText,
-          isTool && styles.toolText,
-        ]}>
+        <Text style={styles.messageText}>
           {item.content}
         </Text>
         <Text style={styles.timestamp}>
@@ -68,13 +148,13 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
   return (
     <KeyboardAvoidingView 
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={styles.backButton}>
-          <Text style={styles.backText}>← Back</Text>
+          <Text style={styles.backText}>←</Text>
         </TouchableOpacity>
         <View style={styles.headerInfo}>
           <Text style={styles.headerTitle} numberOfLines={1}>
@@ -82,9 +162,36 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
           </Text>
           <Text style={styles.headerSubtitle}>{agent.project}</Text>
         </View>
-        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(agent.status) }]}>
-          <Text style={styles.statusText}>{agent.status}</Text>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={() => setShowFileExplorer(true)} style={styles.filesButton}>
+            <Text style={styles.filesButtonText}>📁</Text>
+          </TouchableOpacity>
+          {agent.status === 'processing' && (
+            <TouchableOpacity onPress={handleStop} style={styles.stopButton}>
+              <Text style={styles.stopText}>Stop</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={handleClose} style={styles.closeAgentButton}>
+            <Text style={styles.closeAgentText}>End</Text>
+          </TouchableOpacity>
         </View>
+      </View>
+
+      {/* File Explorer Modal */}
+      <Modal
+        visible={showFileExplorer}
+        animationType="slide"
+        onRequestClose={() => setShowFileExplorer(false)}
+      >
+        <FileExplorerScreen
+          initialPath={agent.project}
+          onClose={() => setShowFileExplorer(false)}
+        />
+      </Modal>
+
+      {/* Status bar */}
+      <View style={[styles.statusBar, { backgroundColor: getStatusColor(agent.status) }]}>
+        <Text style={styles.statusBarText}>{agent.status}</Text>
       </View>
 
       {/* Messages */}
@@ -157,17 +264,18 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    padding: 12,
     backgroundColor: '#1E1E1E',
     borderBottomWidth: 1,
     borderBottomColor: '#333333',
   },
   backButton: {
-    marginRight: 12,
+    padding: 8,
+    marginRight: 8,
   },
   backText: {
     color: '#007AFF',
-    fontSize: 16,
+    fontSize: 20,
   },
   headerInfo: {
     flex: 1,
@@ -182,15 +290,49 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  statusText: {
+  filesButton: {
+    padding: 8,
+  },
+  filesButtonText: {
+    fontSize: 18,
+  },
+  stopButton: {
+    backgroundColor: '#FF9800',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  stopText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  closeAgentButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#F44336',
+  },
+  closeAgentText: {
+    color: '#F44336',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  statusBar: {
+    paddingVertical: 4,
+    alignItems: 'center',
+  },
+  statusBarText: {
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '600',
+    textTransform: 'uppercase',
   },
   centered: {
     flex: 1,
@@ -222,6 +364,39 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A1A2E',
     borderLeftWidth: 3,
     borderLeftColor: '#FF9800',
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+  },
+  toolHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  toolIcon: {
+    fontSize: 14,
+    marginRight: 8,
+  },
+  toolPreview: {
+    flex: 1,
+    color: '#CCCCCC',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  toolCompleted: {
+    color: '#4CAF50',
+  },
+  toolFailed: {
+    color: '#F44336',
+  },
+  expandIcon: {
+    color: '#666666',
+    fontSize: 10,
+    marginLeft: 8,
+  },
+  moreIndicator: {
+    color: '#666666',
+    fontSize: 10,
+    marginTop: 4,
+    fontStyle: 'italic',
   },
   roleLabel: {
     color: '#AAAAAA',
@@ -233,10 +408,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     lineHeight: 22,
-  },
-  toolText: {
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    fontSize: 13,
   },
   timestamp: {
     color: '#888888',

@@ -11,6 +11,14 @@ import { ChatScreen } from './src/screens/ChatScreen';
 
 type Screen = 'settings' | 'agents' | 'chat';
 
+// Try to load config from config.json at build time
+let buildTimeConfig: { backendUrl?: string; token?: string } = {};
+try {
+  buildTimeConfig = require('./config.json');
+} catch (e) {
+  // No config file, will use AsyncStorage
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('settings');
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
@@ -22,6 +30,17 @@ export default function App() {
 
   const checkExistingConfig = async () => {
     try {
+      // First check build-time config
+      if (buildTimeConfig.backendUrl) {
+        const token = buildTimeConfig.token || 'NOAUTH';
+        api.configure(buildTimeConfig.backendUrl, token);
+        api.connectWebSocket();
+        setScreen('agents');
+        setLoading(false);
+        return;
+      }
+
+      // Fall back to AsyncStorage
       const url = await AsyncStorage.getItem('agent_shell_backend_url');
       const token = await AsyncStorage.getItem('agent_shell_backend_token');
       

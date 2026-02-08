@@ -157,6 +157,8 @@ func (s *Server) initDB() error {
 }
 
 func (s *Server) setupRoutes() {
+	// CORS middleware (must be before auth)
+	s.router.Use(s.corsMiddleware)
 	// Auth middleware for all routes
 	s.router.Use(s.authMiddleware)
 
@@ -166,10 +168,10 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/events/message", s.handleMessage).Methods("POST")
 	s.router.HandleFunc("/events/status", s.handleStatus).Methods("POST")
 
-	// API for mobile app (GET/POST)
-	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET")
-	s.router.HandleFunc("/agents/{session_id}/messages", s.handleGetMessages).Methods("GET")
-	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST")
+	// API for mobile app (GET/POST) - include OPTIONS for CORS preflight
+	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/messages", s.handleGetMessages).Methods("GET", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST", "OPTIONS")
 
 	// WebSocket for real-time updates
 	s.router.HandleFunc("/ws", s.handleWebSocket)
@@ -181,10 +183,33 @@ func (s *Server) setupRoutes() {
 	}).Methods("GET")
 }
 
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow requests from any origin (for local development)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip auth for health check
 		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Skip auth if token is "NOAUTH" (for testing)
+		if s.config.AuthToken == "NOAUTH" {
 			next.ServeHTTP(w, r)
 			return
 		}

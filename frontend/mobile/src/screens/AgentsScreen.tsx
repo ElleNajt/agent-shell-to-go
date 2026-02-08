@@ -2,13 +2,12 @@ import React from 'react';
 import { 
   View, 
   Text, 
-  FlatList, 
   StyleSheet, 
   ActivityIndicator,
-  RefreshControl,
+  TouchableOpacity,
 } from 'react-native';
-import { useAgents, groupByProject } from '../hooks/useAgents';
-import { AgentNode } from '../components/AgentNode';
+import { useAgents } from '../hooks/useAgents';
+import { GraphView } from '../components/GraphView';
 import { Agent } from '../api/client';
 
 interface AgentsScreenProps {
@@ -32,52 +31,25 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>Error: {error}</Text>
-        <Text style={styles.retryText} onPress={refetch}>Tap to retry</Text>
+        <TouchableOpacity onPress={refetch} style={styles.retryButton}>
+          <Text style={styles.retryText}>Tap to retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
-
-  if (agents.length === 0) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.emptyText}>No active agents</Text>
-        <Text style={styles.hintText}>Start an agent in Emacs to see it here</Text>
-      </View>
-    );
-  }
-
-  // Group by project
-  const grouped = groupByProject(agents);
-  const sections = Array.from(grouped.entries()).map(([project, projectAgents]) => ({
-    project,
-    agents: projectAgents,
-  }));
 
   return (
     <View style={styles.container}>
-      <FlatList
-        data={sections}
-        keyExtractor={(item) => item.project}
-        refreshControl={
-          <RefreshControl 
-            refreshing={loading} 
-            onRefresh={refetch}
-            tintColor="#007AFF"
-          />
-        }
-        renderItem={({ item: section }) => (
-          <View style={styles.section}>
-            <Text style={styles.sectionHeader}>{section.project}</Text>
-            {section.agents.map(agent => (
-              <AgentNode
-                key={agent.session_id}
-                agent={agent}
-                selected={selectedAgent?.session_id === agent.session_id}
-                onPress={() => onSelectAgent(agent)}
-              />
-            ))}
-          </View>
-        )}
+      <View style={styles.header}>
+        <Text style={styles.title}>Agent Graph</Text>
+        <TouchableOpacity onPress={refetch} style={styles.refreshButton}>
+          <Text style={styles.refreshText}>Refresh</Text>
+        </TouchableOpacity>
+      </View>
+      <GraphView
+        agents={agents}
+        selectedAgent={selectedAgent}
+        onSelectAgent={onSelectAgent}
       />
     </View>
   );
@@ -87,6 +59,26 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#121212',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  title: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '600',
+  },
+  refreshButton: {
+    padding: 8,
+  },
+  refreshText: {
+    color: '#007AFF',
+    fontSize: 14,
   },
   centered: {
     flex: 1,
@@ -105,31 +97,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'center',
   },
+  retryButton: {
+    marginTop: 12,
+    padding: 12,
+  },
   retryText: {
     color: '#007AFF',
-    marginTop: 12,
     fontSize: 16,
-  },
-  emptyText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  hintText: {
-    color: '#888888',
-    marginTop: 8,
-    fontSize: 14,
-  },
-  section: {
-    marginTop: 16,
-  },
-  sectionHeader: {
-    color: '#888888',
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginLeft: 16,
-    marginBottom: 8,
   },
 });

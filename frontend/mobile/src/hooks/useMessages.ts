@@ -1,0 +1,59 @@
+import { useState, useEffect, useCallback } from 'react';
+import { api, Message, WSEvent } from '../api/client';
+
+export function useMessages(sessionId: string | null) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const fetchMessages = useCallback(async () => {
+    if (!sessionId) return;
+    
+    setLoading(true);
+    try {
+      const data = await api.getMessages(sessionId);
+      setMessages(data);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch messages');
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || !api.isConfigured()) return;
+    
+    fetchMessages();
+
+    const unsubscribe = api.subscribe((event: WSEvent) => {
+      if (event.type === 'message' && event.payload.session_id === sessionId) {
+        setMessages(prev => [...prev, {
+          id: Date.now(),
+          session_id: event.payload.session_id,
+          role: event.payload.role,
+          content: event.payload.content,
+          timestamp: event.payload.timestamp,
+        }]);
+      }
+    });
+
+    return unsubscribe;
+  }, [sessionId, fetchMessages]);
+
+  const sendMessage = useCallback(async (content: string) => {
+    if (!sessionId || !content.trim()) return;
+
+    setSending(true);
+    try {
+      await api.sendMessage(sessionId, content);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to send message');
+    } finally {
+      setSending(false);
+    }
+  }, [sessionId]);
+
+  return { messages, loading, error, sending, sendMessage, refetch: fetchMessages };
+}

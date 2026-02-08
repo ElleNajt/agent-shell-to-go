@@ -1,0 +1,18 @@
+# Compiled elisp
+*.elc
+
+# Build artifacts
+frontend/backend/agent-shell-backend
+
+# Database
+*.db
+
+# Config with secrets/IPs
+frontend/mobile/config.json
+
+# Node
+node_modules/
+
+# Expo
+.expo/
+frontend/mobile/.expo/

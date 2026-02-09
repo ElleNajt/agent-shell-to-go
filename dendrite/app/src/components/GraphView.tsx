@@ -209,11 +209,14 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     trueRoots.forEach(root => assignDepths(root, 0));
     
     // Add orphaned agents to ring 2 (or create it if needed)
+    // Only add if not already placed by BFS traversal
     if (orphanedAgents.length > 0) {
       if (!nodesByDepth[2]) nodesByDepth[2] = [];
       orphanedAgents.forEach(agent => {
-        depthOf.set(agent.session_id, 2);
-        nodesByDepth[2].push(agent);
+        if (!depthOf.has(agent.session_id)) {
+          depthOf.set(agent.session_id, 2);
+          nodesByDepth[2].push(agent);
+        }
       });
     }
     

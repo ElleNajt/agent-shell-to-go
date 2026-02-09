@@ -589,10 +589,11 @@ Set temporarily during spawn to pass parent info to the new agent.")
   "Enable mobile mode on newly spawned agent with parent relationship."
   (when (and (derived-mode-p 'agent-shell-mode)
              agent-shell-to-go-mobile-backend-url
-             (agent-shell-to-go-mobile--load-token))
+             (agent-shell-to-go-mobile--load-token)
+             (not agent-shell-to-go-mobile-mode)) ; Don't enable twice
     ;; Enable the mode (this will send spawn event)
     (agent-shell-to-go-mobile-mode 1)
-    ;; If we have a spawner, update the parent relationship
+    ;; If we have a spawner, update the parent relationship (upsert, same session_id)
     (when agent-shell-to-go-mobile--spawner-session-id
       (agent-shell-to-go-mobile--post
        "/events/agent-spawn"

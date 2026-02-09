@@ -71,6 +71,12 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
             api.disconnectWebSocket();
             api.connectWebSocket();
           }
+        } else if (savedCurrentUrl) {
+          // Saved URL not in list - clear it and use default
+          await AsyncStorage.removeItem('agent_shell_current_machine_url');
+          if (list.length > 0) {
+            setCurrentMachine(list[0]);
+          }
         } else if (currentUrl) {
           // Add current config as a machine
           const defaultMachine = { name: 'Default', url: currentUrl };

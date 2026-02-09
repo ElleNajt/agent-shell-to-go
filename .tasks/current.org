@@ -4,6 +4,7 @@
 CLOSED: [2025-02-09]
 Text box sometimes becomes thin and stretches down past its container.
 Fixed: Added markdownContainer wrapper with flex constraints in ChatScreen.tsx (commit 29cc576)
+Additional fix: Set explicit width: 85% on agent messages (commit 047c20f)
 
 ** DONE Fix tool messages showing just tool name without args
 CLOSED: [2025-02-09]
@@ -59,6 +60,7 @@ The agent in .claude-meta should display as "Conductor" instead of
 ** DONE Color agent boxes for unread messages
 CLOSED: [2025-02-09]
 Purple border/background and badge on agents with unread messages (commit b2862ee)
+Fixed false positives - only show unread after first view (commit 308cc40)
 
 ** DONE Remove [RUNNING] / [COMPLETED] tags from tool messages
 CLOSED: [2025-02-09]

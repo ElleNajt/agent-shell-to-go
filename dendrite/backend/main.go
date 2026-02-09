@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -28,7 +27,6 @@ import (
 type Config struct {
 	ListenAddr string // Tailscale IP:port to listen on
 	DBPath     string // Path to SQLite database
-	AuthToken  string // Bearer token for authentication
 }
 
 // Server holds all server state
@@ -169,10 +167,9 @@ func (s *Server) initDB() error {
 }
 
 func (s *Server) setupRoutes() {
-	// CORS middleware (must be before auth)
+	// CORS middleware
 	s.router.Use(s.corsMiddleware)
-	// Auth middleware for all routes
-	s.router.Use(s.authMiddleware)
+	// Tailscale is the auth layer - no token auth needed
 
 	// Events from Emacs (POST)
 	s.router.HandleFunc("/events/agent-spawn", s.handleAgentSpawn).Methods("POST")
@@ -222,42 +219,6 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip auth for health check
-		if r.URL.Path == "/health" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Skip auth if token is "NOAUTH" (for testing)
-		if s.config.AuthToken == "NOAUTH" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Check Bearer token
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			http.Error(w, "missing authorization header", http.StatusUnauthorized)
-			return
-		}
-
-		if !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, "invalid authorization format", http.StatusUnauthorized)
-			return
-		}
-
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.config.AuthToken)) != 1 {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 
@@ -967,29 +928,20 @@ type WSClient struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Check auth via query param (WS doesn't support headers from browsers/apps)
-	token := r.URL.Query().Get("token")
-	authorized := token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.config.AuthToken)) == 1
-
+	// Tailscale is the auth layer - all connections are authorized
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("websocket upgrade error: %v", err)
 		return
 	}
 
-	client := &WSClient{conn: conn, authorized: authorized}
-
 	s.wsMutex.Lock()
-	s.wsClients[conn] = authorized
+	s.wsClients[conn] = true
 	s.wsMutex.Unlock()
 
-	if authorized {
-		log.Printf("websocket client connected (authorized): %s", conn.RemoteAddr())
-	} else {
-		log.Printf("websocket client connected (pending auth): %s", conn.RemoteAddr())
-	}
+	log.Printf("websocket client connected: %s", conn.RemoteAddr())
 
-	// Keep connection alive, handle messages
+	// Keep connection alive
 	go func() {
 		defer func() {
 			s.wsMutex.Lock()
@@ -1000,34 +952,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		for {
-			_, msgBytes, err := conn.ReadMessage()
+			_, _, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-
-			// Handle incoming messages (for auth or commands)
-			var msg map[string]interface{}
-			if err := json.Unmarshal(msgBytes, &msg); err != nil {
-				continue
-			}
-
-			// Handle auth message (alternative to query param)
-			if msgType, ok := msg["type"].(string); ok && msgType == "auth" {
-				if tokenStr, ok := msg["token"].(string); ok {
-					if subtle.ConstantTimeCompare([]byte(tokenStr), []byte(s.config.AuthToken)) == 1 {
-						s.wsMutex.Lock()
-						s.wsClients[conn] = true
-						client.authorized = true
-						s.wsMutex.Unlock()
-						log.Printf("websocket client authorized: %s", conn.RemoteAddr())
-
-						// Send auth success
-						conn.WriteJSON(map[string]string{"type": "auth_success"})
-					} else {
-						conn.WriteJSON(map[string]string{"type": "auth_failed"})
-					}
-				}
-			}
+			// No need to handle messages - just keep connection alive
 		}
 	}()
 }
@@ -1065,7 +994,6 @@ func truncate(s string, maxLen int) string {
 func main() {
 	listenAddr := flag.String("listen", "", "Address to listen on (e.g., 100.x.x.x:8080)")
 	dbPath := flag.String("db", "agents.db", "Path to SQLite database")
-	tokenFile := flag.String("token-file", "", "Path to file containing auth token")
 	allowLocalhost := flag.Bool("allow-localhost", false, "Allow binding to localhost (for testing)")
 	flag.Parse()
 
@@ -1090,26 +1018,9 @@ func main() {
 		log.Fatal("localhost binding requires --allow-localhost flag (for testing only)")
 	}
 
-	// Load auth token
-	var authToken string
-	if *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			log.Fatalf("failed to read token file: %v", err)
-		}
-		authToken = strings.TrimSpace(string(data))
-	} else {
-		authToken = os.Getenv("AGENT_SHELL_API_TOKEN")
-	}
-
-	if authToken == "" {
-		log.Fatal("auth token required: set AGENT_SHELL_API_TOKEN or use --token-file")
-	}
-
 	config := Config{
 		ListenAddr: *listenAddr,
 		DBPath:     *dbPath,
-		AuthToken:  authToken,
 	}
 
 	server, err := NewServer(config)
@@ -1141,7 +1052,7 @@ func main() {
 		httpServer.Shutdown(ctx)
 	}()
 
-	log.Printf("listening on %s (Tailscale-only, token auth required)", config.ListenAddr)
+	log.Printf("listening on %s (Tailscale-only)", config.ListenAddr)
 	if err := httpServer.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

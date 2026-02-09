@@ -4,6 +4,7 @@ export interface Agent {
   session_id: string;
   buffer_name: string;
   project: string;
+  project_path: string;
   parent_session_id: string | null;
   status: 'ready' | 'processing' | 'permission_required' | 'closed';
   last_message: string;

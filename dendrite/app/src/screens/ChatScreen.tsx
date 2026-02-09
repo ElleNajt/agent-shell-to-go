@@ -207,7 +207,7 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         onRequestClose={() => setShowFileExplorer(false)}
       >
         <FileExplorerScreen
-          initialPath={agent.project}
+          initialPath={agent.project_path || agent.project}
           onClose={() => setShowFileExplorer(false)}
         />
       </Modal>

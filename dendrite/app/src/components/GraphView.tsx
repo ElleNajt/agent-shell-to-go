@@ -295,7 +295,6 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
           const statusColor = STATUS_COLORS[node.agent.status] || STATUS_COLORS.ready;
           const isDispatcher = node.agent.buffer_name.toLowerCase().includes('dispatcher');
           const name = node.agent.buffer_name.split(' @ ')[0] || node.agent.buffer_name;
-          const shortName = name.length > 15 ? name.slice(0, 12) + '...' : name;
           const projectName = node.agent.project.split('/').pop() || node.agent.project;
 
           return (
@@ -304,8 +303,8 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
               style={[
                 styles.node,
                 {
-                  left: node.x - 55,
-                  top: node.y - 30,
+                  left: node.x,
+                  top: node.y,
                   borderColor: isSelected ? '#007AFF' : statusColor,
                   backgroundColor: isSelected ? '#1a3a5c' : '#1E1E1E',
                 },
@@ -315,14 +314,14 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
               {isDispatcher ? (
                 <>
                   <Text style={styles.dispatcherHat}>🎩</Text>
-                  <Text style={styles.dispatcherProject} numberOfLines={1}>{projectName}</Text>
+                  <Text style={styles.dispatcherProject}>{projectName}</Text>
                   <View style={[styles.statusDot, { backgroundColor: statusColor, marginTop: 4 }]} />
                 </>
               ) : (
                 <>
                   <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-                  <Text style={styles.nodeName} numberOfLines={1}>{shortName}</Text>
-                  <Text style={styles.nodeProject} numberOfLines={1}>{projectName}</Text>
+                  <Text style={styles.nodeName}>{name}</Text>
+                  <Text style={styles.nodeProject}>{projectName}</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -360,11 +359,14 @@ const styles = StyleSheet.create({
   },
   node: {
     position: 'absolute',
-    width: 110,
-    padding: 10,
+    minWidth: 80,
+    maxWidth: 180,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderRadius: 12,
     borderWidth: 2,
     alignItems: 'center',
+    transform: [{ translateX: '-50%' }, { translateY: '-50%' }],
   },
   statusDot: {
     width: 10,

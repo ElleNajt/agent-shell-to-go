@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAgents } from '../hooks/useAgents';
+import { useUnreadAgents } from '../hooks/useUnreadAgents';
 import { GraphView } from '../components/GraphView';
 import { AgentNode } from '../components/AgentNode';
 import { Agent, api } from '../api/client';
@@ -29,7 +30,14 @@ interface AgentsScreenProps {
 
 export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps) {
   const { agents, loading, error, refetch } = useAgents();
+  const { hasUnread, markAsViewed } = useUnreadAgents();
   const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph');
+  
+  // Wrap onSelectAgent to mark as viewed
+  const handleSelectAgent = (agent: Agent) => {
+    markAsViewed(agent.session_id);
+    onSelectAgent(agent);
+  };
   const [showActions, setShowActions] = useState(false);
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [showNewDispatcher, setShowNewDispatcher] = useState(false);
@@ -389,7 +397,8 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
         <GraphView
           agents={agents}
           selectedAgent={selectedAgent}
-          onSelectAgent={onSelectAgent}
+          onSelectAgent={handleSelectAgent}
+          hasUnread={hasUnread}
         />
       ) : (
         <FlatList
@@ -399,7 +408,8 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
             <AgentNode
               agent={item}
               selected={selectedAgent?.session_id === item.session_id}
-              onPress={() => onSelectAgent(item)}
+              onPress={() => handleSelectAgent(item)}
+              hasUnread={hasUnread(item.session_id, item.last_activity, item.last_message_role)}
             />
           )}
           contentContainerStyle={styles.listContent}

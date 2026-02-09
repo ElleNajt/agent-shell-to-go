@@ -21,6 +21,7 @@ interface GraphViewProps {
   agents: Agent[];
   selectedAgent: Agent | null;
   onSelectAgent: (agent: Agent) => void;
+  hasUnread?: (sessionId: string, lastActivity: string, lastMessageRole: string) => boolean;
 }
 
 interface NodePosition {
@@ -37,7 +38,7 @@ const STATUS_COLORS: Record<string, string> = {
   closed: '#9E9E9E',
 };
 
-export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewProps) {
+export function GraphView({ agents, selectedAgent, onSelectAgent, hasUnread }: GraphViewProps) {
   const { width, height } = Dimensions.get('window');
   const centerX = width / 2;
   const centerY = height / 2 - 100;
@@ -409,6 +410,15 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
           const isDispatcher = node.agent.buffer_name.toLowerCase().includes('dispatcher');
           const name = node.agent.buffer_name.split(' @ ')[0] || node.agent.buffer_name;
           const projectName = node.agent.project.split('/').pop() || node.agent.project;
+          const isUnread = hasUnread?.(node.agent.session_id, node.agent.last_activity, node.agent.last_message_role) ?? false;
+
+          // Determine background color: selected > unread > default
+          let backgroundColor = '#1E1E1E';
+          if (isSelected) {
+            backgroundColor = '#1a3a5c';
+          } else if (isUnread) {
+            backgroundColor = '#2a1a3c'; // Purple tint for unread
+          }
 
           return (
             <TouchableOpacity
@@ -418,8 +428,8 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
                 {
                   left: node.x,
                   top: node.y,
-                  borderColor: isSelected ? '#007AFF' : statusColor,
-                  backgroundColor: isSelected ? '#1a3a5c' : '#1E1E1E',
+                  borderColor: isSelected ? '#007AFF' : isUnread ? '#9c27b0' : statusColor,
+                  backgroundColor,
                 },
               ]}
               onPress={() => onSelectAgent(node.agent)}
@@ -429,12 +439,14 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
                   <Text style={styles.dispatcherHat}>🎩</Text>
                   <Text style={styles.dispatcherProject}>{projectName}</Text>
                   <View style={[styles.statusDot, { backgroundColor: statusColor, marginTop: 4 }]} />
+                  {isUnread && <View style={styles.unreadBadge} />}
                 </>
               ) : (
                 <>
                   <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
                   <Text style={styles.nodeName}>{name}</Text>
                   <Text style={styles.nodeProject}>{projectName}</Text>
+                  {isUnread && <View style={styles.unreadBadge} />}
                 </>
               )}
             </TouchableOpacity>
@@ -507,6 +519,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  unreadBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#9c27b0',
+    borderWidth: 2,
+    borderColor: '#121212',
   },
   empty: {
     ...StyleSheet.absoluteFillObject,

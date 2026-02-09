@@ -6,6 +6,7 @@ interface AgentNodeProps {
   agent: Agent;
   selected: boolean;
   onPress: () => void;
+  hasUnread?: boolean;
 }
 
 const STATUS_COLORS = {
@@ -15,7 +16,7 @@ const STATUS_COLORS = {
   closed: '#9E9E9E',
 };
 
-export function AgentNode({ agent, selected, onPress }: AgentNodeProps) {
+export function AgentNode({ agent, selected, onPress, hasUnread }: AgentNodeProps) {
   const statusColor = STATUS_COLORS[agent.status] || STATUS_COLORS.ready;
   
   // Extract agent name from buffer name (e.g., "Claude Code Agent @ myproject" -> "Claude Code Agent")
@@ -31,7 +32,8 @@ export function AgentNode({ agent, selected, onPress }: AgentNodeProps) {
       style={[
         styles.container, 
         selected && styles.selected,
-        { borderLeftColor: statusColor }
+        hasUnread && styles.unread,
+        { borderLeftColor: hasUnread ? '#9c27b0' : statusColor }
       ]} 
       onPress={onPress}
       activeOpacity={0.7}
@@ -39,6 +41,7 @@ export function AgentNode({ agent, selected, onPress }: AgentNodeProps) {
       <View style={styles.header}>
         <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
         <Text style={styles.name} numberOfLines={1}>{agentName}</Text>
+        {hasUnread && <View style={styles.unreadBadge} />}
       </View>
       
       <Text style={styles.project}>{agent.project}</Text>
@@ -84,6 +87,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#2D2D2D',
     borderColor: '#007AFF',
     borderWidth: 1,
+  },
+  unread: {
+    backgroundColor: '#2a1a3c',
+  },
+  unreadBadge: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#9c27b0',
+    marginLeft: 8,
   },
   header: {
     flexDirection: 'row',

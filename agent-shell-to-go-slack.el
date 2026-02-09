@@ -1397,15 +1397,15 @@ Notify CHANNEL on success."
             (if (and diff-text (> (length diff-text) 0))
                 (agent-shell-to-go-slack--send
                  (format ":hourglass: `%s`\n```diff\n%s\n```" display diff-text)
-                 thread-ts channel-id nil t)
+                 thread-ts channel-id t)
               (agent-shell-to-go-slack--send
                (format ":hourglass: `%s`" display)
-               thread-ts channel-id nil t))
+               thread-ts channel-id t))
           (error
            (agent-shell-to-go--debug "tool_call error: %s" err)
            (agent-shell-to-go-slack--send
             (format ":hourglass: `%s`" display)
-            thread-ts channel-id nil t)))))))
+            thread-ts channel-id t)))))))
 
 (defun agent-shell-to-go-slack--on-tool-result (buffer session-data update)
   "Handle tool result UPDATE in BUFFER."
@@ -1444,7 +1444,7 @@ Notify CHANNEL on success."
            ((and diff-text (> (length diff-text) 0))
             (let ((full-text (format "%s\n```diff\n%s\n```" status-icon diff-text)))
               (if agent-shell-to-go-slack-show-tool-output
-                  (agent-shell-to-go-slack--send full-text thread-ts channel-id nil t)
+                  (agent-shell-to-go-slack--send full-text thread-ts channel-id t)
                 ;; Hidden mode: show just icon, save full for expansion
                 (let* ((response (agent-shell-to-go-slack--send status-icon thread-ts channel-id))
                        (msg-ts (alist-get 'ts response)))
@@ -1455,7 +1455,7 @@ Notify CHANNEL on success."
            ((and output (stringp output) (> (length output) 0))
             (let ((full-text (format "%s\n```\n%s\n```" status-icon output)))
               (if agent-shell-to-go-slack-show-tool-output
-                  (agent-shell-to-go-slack--send full-text thread-ts channel-id nil t)
+                  (agent-shell-to-go-slack--send full-text thread-ts channel-id t)
                 ;; Hidden mode: show just icon, save full for expansion
                 (let* ((response (agent-shell-to-go-slack--send status-icon thread-ts channel-id))
                        (msg-ts (alist-get 'ts response)))

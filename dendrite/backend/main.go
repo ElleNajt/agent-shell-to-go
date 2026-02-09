@@ -186,6 +186,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/restart", s.handleRestartAgent).Methods("POST", "OPTIONS")
 
 	// Actions for spawning new agents
 	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
@@ -544,6 +545,77 @@ func (s *Server) handleCloseAgent(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "closing"})
+}
+
+func (s *Server) handleRestartAgent(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	var req struct {
+		ResumeMessageCount int `json:"resume_message_count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Default to 10 messages if not specified
+		req.ResumeMessageCount = 10
+	}
+
+	// Get agent info before we close it
+	var bufferName, project, projectPath string
+	var parentSessionID *string
+	err := s.db.QueryRow(`
+		SELECT buffer_name, project, project_path, parent_session_id
+		FROM agents WHERE session_id = ?
+	`, sessionID).Scan(&bufferName, &project, &projectPath, &parentSessionID)
+
+	if err != nil {
+		log.Printf("restart request for unknown session %s: %v", sessionID, err)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Get last N messages for resume context
+	rows, err := s.db.Query(`
+		SELECT role, content FROM messages
+		WHERE session_id = ?
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, sessionID, req.ResumeMessageCount)
+
+	var resumeMessages []map[string]string
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var role, content string
+			if err := rows.Scan(&role, &content); err == nil {
+				resumeMessages = append(resumeMessages, map[string]string{
+					"role":    role,
+					"content": content,
+				})
+			}
+		}
+		// Reverse to chronological order
+		for i, j := 0, len(resumeMessages)-1; i < j; i, j = i+1, j-1 {
+			resumeMessages[i], resumeMessages[j] = resumeMessages[j], resumeMessages[i]
+		}
+	}
+
+	log.Printf("restart request for session %s (buffer: %s, %d resume messages)", sessionID, bufferName, len(resumeMessages))
+
+	// Broadcast as a "restart_request" event - Emacs will kill buffer and respawn
+	// TODO: Use proper acp/agent-shell resume functionality when available
+	s.broadcast(WSEvent{
+		Type: "restart_request",
+		Payload: map[string]interface{}{
+			"session_id":      sessionID,
+			"buffer_name":     bufferName,
+			"project":         project,
+			"project_path":    projectPath,
+			"resume_messages": resumeMessages,
+		},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "restarting"})
 }
 
 func (s *Server) handleNewAgent(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,14 @@ class ApiClient {
     });
   }
 
+  async restartAgent(sessionId: string, resumeMessageCount = 10): Promise<void> {
+    // TODO: Use proper acp/agent-shell resume functionality when available
+    await this.request(`/agents/${encodeURIComponent(sessionId)}/restart`, {
+      method: 'POST',
+      body: JSON.stringify({ resume_message_count: resumeMessageCount }),
+    });
+  }
+
   async newAgent(name: string, path: string, task?: string): Promise<void> {
     await this.request('/actions/new-agent', {
       method: 'POST',

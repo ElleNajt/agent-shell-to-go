@@ -69,6 +69,28 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     );
   };
 
+  const handleRestart = () => {
+    // TODO: Use proper acp/agent-shell resume functionality when available
+    Alert.alert(
+      'Restart Agent',
+      `This will restart "${agent.buffer_name.split(' @ ')[0]}" with context from the last 10 messages. Continue?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restart',
+          onPress: async () => {
+            try {
+              await api.restartAgent(agent.session_id);
+              onBack();
+            } catch (e) {
+              Alert.alert('Error', 'Failed to restart agent');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const toggleToolExpanded = (id: number) => {
     setExpandedTools(prev => {
       const next = new Set(prev);
@@ -166,6 +188,9 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
               <Text style={styles.stopText}>Stop</Text>
             </TouchableOpacity>
           )}
+          <TouchableOpacity onPress={handleRestart} style={styles.restartButton}>
+            <Text style={styles.restartButtonText}>↻</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleClose} style={styles.closeAgentButton}>
             <Text style={styles.closeAgentText}>End</Text>
           </TouchableOpacity>
@@ -308,6 +333,13 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  restartButton: {
+    padding: 8,
+  },
+  restartButtonText: {
+    color: '#007AFF',
+    fontSize: 18,
   },
   closeAgentButton: {
     paddingHorizontal: 10,

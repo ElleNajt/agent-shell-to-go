@@ -454,7 +454,7 @@ View and interact with agents from the mobile app."
              (data (json-read-from-string payload))
              (type (alist-get 'type data))
              (event-payload (alist-get 'payload data)))
-        (agent-shell-to-go-mobile--debug "WebSocket message: %s" type)
+        (agent-shell-to-go-mobile--debug "WebSocket message type=%s payload=%S" type event-payload)
         (pcase type
           ("send_request"
            (agent-shell-to-go-mobile--handle-send-request event-payload))
@@ -462,6 +462,8 @@ View and interact with agents from the mobile app."
            (agent-shell-to-go-mobile--handle-stop-request event-payload))
           ("close_request"
            (agent-shell-to-go-mobile--handle-close-request event-payload))
+          ("restart_request"
+           (agent-shell-to-go-mobile--handle-restart-request event-payload))
           ("new_agent_request"
            (agent-shell-to-go-mobile--handle-new-agent-request event-payload))
           ("new_dispatcher_request"
@@ -532,6 +534,54 @@ Kills the agent buffer."
           (agent-shell-to-go-mobile--debug "Closing agent: %s" (buffer-name buffer))
           (kill-buffer buffer))
       (agent-shell-to-go-mobile--debug "No buffer found for close: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--handle-restart-request (payload)
+  "Handle a restart_request PAYLOAD from mobile app.
+Kills the buffer and respawns a new agent with the same name.
+Injects resume messages from the previous session as context.
+TODO: Use proper acp/agent-shell resume functionality when available."
+  (let* ((session-id (alist-get 'session_id payload))
+         (buffer-name (alist-get 'buffer_name payload))
+         (project (alist-get 'project payload))
+         (project-path (alist-get 'project_path payload))
+         (resume-messages (alist-get 'resume_messages payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (agent-shell-to-go-mobile--debug "Restart request: session=%s buffer=%s path=%s"
+                                     session-id buffer-name project-path)
+    ;; Kill the existing buffer if it exists
+    (when buffer
+      (agent-shell-to-go-mobile--debug "Killing existing buffer: %s" (buffer-name buffer))
+      (kill-buffer buffer))
+    ;; Spawn a new agent with the same buffer name
+    (when (and project-path (file-directory-p project-path))
+      (let* ((default-directory project-path)
+             ;; Extract agent name from buffer name (remove " @ project" suffix)
+             (agent-name (if (string-match "\\(.+\\) @ " buffer-name)
+                             (match-string 1 buffer-name)
+                           buffer-name))
+             ;; Build resume context from previous messages
+             (resume-context (when resume-messages
+                               (agent-shell-to-go-mobile--format-resume-context resume-messages))))
+        (agent-shell-to-go-mobile--debug "Spawning new agent: %s in %s" agent-name project-path)
+        (if (and (fboundp 'meta-agent-shell-start-named-agent) agent-name)
+            ;; Use meta-agent-shell if available, passing resume context as task
+            (meta-agent-shell-start-named-agent project-path agent-name resume-context)
+          ;; Fallback: start a regular agent-shell
+          (agent-shell))))))
+
+(defun agent-shell-to-go-mobile--format-resume-context (messages)
+  "Format MESSAGES (alist of role/content) into a resume context string."
+  (when (and messages (> (length messages) 0))
+    (concat
+     "You are resuming a previous session. Here is the recent conversation history for context:\n\n"
+     (mapconcat
+      (lambda (msg)
+        (let ((role (alist-get 'role msg))
+              (content (alist-get 'content msg)))
+          (format "[%s]: %s" (upcase role) content)))
+      messages
+      "\n\n")
+     "\n\nPlease continue from where we left off.")))
 
 (defun agent-shell-to-go-mobile--handle-new-agent-request (payload)
   "Handle a new_agent_request PAYLOAD from mobile app.

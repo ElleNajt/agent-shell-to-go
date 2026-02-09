@@ -6,8 +6,16 @@ import {
   StyleSheet, 
   Dimensions,
   PanResponder,
+  GestureResponderEvent,
 } from 'react-native';
 import { Agent } from '../api/client';
+
+// Calculate distance between two touch points
+function getDistance(touches: { pageX: number; pageY: number }[]): number {
+  const dx = touches[0].pageX - touches[1].pageX;
+  const dy = touches[0].pageY - touches[1].pageY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
 
 interface GraphViewProps {
   agents: Agent[];
@@ -35,25 +43,73 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
   const centerY = height / 2 - 100;
   
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(1);
   const offsetRef = useRef({ x: 0, y: 0 });
+  const scaleRef = useRef(1);
+  const initialPinchDistance = useRef<number | null>(null);
+  const isPinching = useRef(false);
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
+      onMoveShouldSetPanResponder: (evt: GestureResponderEvent, gestureState) => {
+        // Always capture if two fingers (pinch gesture)
+        if (evt.nativeEvent.touches.length >= 2) {
+          return true;
+        }
+        // Single finger pan
         return Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5;
       },
-      onPanResponderMove: (_, gestureState) => {
-        setOffset({
-          x: offsetRef.current.x + gestureState.dx,
-          y: offsetRef.current.y + gestureState.dy,
-        });
+      onPanResponderGrant: (evt: GestureResponderEvent) => {
+        // Initialize pinch if starting with two fingers
+        if (evt.nativeEvent.touches.length >= 2) {
+          const touches = evt.nativeEvent.touches;
+          initialPinchDistance.current = getDistance([
+            { pageX: touches[0].pageX, pageY: touches[0].pageY },
+            { pageX: touches[1].pageX, pageY: touches[1].pageY },
+          ]);
+          isPinching.current = true;
+        }
       },
-      onPanResponderRelease: (_, gestureState) => {
-        offsetRef.current = {
-          x: offsetRef.current.x + gestureState.dx,
-          y: offsetRef.current.y + gestureState.dy,
-        };
+      onPanResponderMove: (evt: GestureResponderEvent, gestureState) => {
+        const touches = evt.nativeEvent.touches;
+        
+        // Handle pinch zoom
+        if (touches.length >= 2 && initialPinchDistance.current !== null) {
+          isPinching.current = true;
+          const currentDistance = getDistance([
+            { pageX: touches[0].pageX, pageY: touches[0].pageY },
+            { pageX: touches[1].pageX, pageY: touches[1].pageY },
+          ]);
+          const pinchScale = currentDistance / initialPinchDistance.current;
+          const newScale = Math.max(0.3, Math.min(3, scaleRef.current * pinchScale));
+          setScale(newScale);
+          // Update initial distance for continuous pinching
+          initialPinchDistance.current = currentDistance;
+          scaleRef.current = newScale;
+          return;
+        }
+        
+        // Handle pan (only if not pinching)
+        if (!isPinching.current) {
+          setOffset({
+            x: offsetRef.current.x + gestureState.dx,
+            y: offsetRef.current.y + gestureState.dy,
+          });
+        }
+      },
+      onPanResponderRelease: (evt: GestureResponderEvent, gestureState) => {
+        if (isPinching.current) {
+          // Reset pinch state
+          initialPinchDistance.current = null;
+          isPinching.current = false;
+        } else {
+          // Commit pan change
+          offsetRef.current = {
+            x: offsetRef.current.x + gestureState.dx,
+            y: offsetRef.current.y + gestureState.dy,
+          };
+        }
       },
     })
   ).current;
@@ -154,6 +210,7 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
             transform: [
               { translateX: offset.x },
               { translateY: offset.y },
+              { scale },
             ],
           },
         ]}
@@ -231,7 +288,7 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       )}
 
       {agents.length > 0 && (
-        <Text style={styles.hint}>Drag to pan</Text>
+        <Text style={styles.hint}>Drag to pan, pinch to zoom</Text>
       )}
     </View>
   );

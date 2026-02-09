@@ -41,18 +41,16 @@ export interface FileContent {
 
 class ApiClient {
   private baseUrl: string = '';
-  private token: string = '';
   private ws: WebSocket | null = null;
   private wsListeners: Set<(event: WSEvent) => void> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  configure(baseUrl: string, token: string) {
+  configure(baseUrl: string) {
     this.baseUrl = baseUrl;
-    this.token = token;
   }
 
   isConfigured(): boolean {
-    return !!this.baseUrl && !!this.token;
+    return !!this.baseUrl;
   }
 
   getBaseUrl(): string {
@@ -63,7 +61,7 @@ class ApiClient {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...options,
       headers: {
-        'Authorization': `Bearer ${this.token}`,
+        'Authorization': 'Bearer NOAUTH',
         'Content-Type': 'application/json',
         ...options.headers,
       },
@@ -164,8 +162,8 @@ class ApiClient {
       return;
     }
 
-    // Convert http(s) to ws(s), include token in query param
-    const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(this.token);
+    // Convert http(s) to ws(s)
+    const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/ws?token=NOAUTH';
     console.log('WebSocket connecting to:', wsUrl);
     
     this.ws = new WebSocket(wsUrl);

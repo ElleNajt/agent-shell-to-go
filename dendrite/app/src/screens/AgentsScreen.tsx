@@ -83,7 +83,7 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
 
   const switchMachine = async (machine: Machine) => {
     setCurrentMachine(machine);
-    api.configure(machine.url, 'NOAUTH');
+    api.configure(machine.url);
     api.disconnectWebSocket();
     api.connectWebSocket();
     setShowMachines(false);

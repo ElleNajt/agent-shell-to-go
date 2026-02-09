@@ -15,11 +15,9 @@ interface SettingsScreenProps {
 }
 
 const STORAGE_KEY_URL = 'agent_shell_backend_url';
-const STORAGE_KEY_TOKEN = 'agent_shell_backend_token';
 
 export function SettingsScreen({ onConfigured }: SettingsScreenProps) {
   const [url, setUrl] = useState('');
-  const [token, setToken] = useState('');
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
@@ -29,31 +27,28 @@ export function SettingsScreen({ onConfigured }: SettingsScreenProps) {
   const loadSavedConfig = async () => {
     try {
       const savedUrl = await AsyncStorage.getItem(STORAGE_KEY_URL);
-      const savedToken = await AsyncStorage.getItem(STORAGE_KEY_TOKEN);
       if (savedUrl) setUrl(savedUrl);
-      if (savedToken) setToken(savedToken);
     } catch (e) {
       console.error('Failed to load config:', e);
     }
   };
 
   const testConnection = async () => {
-    if (!url.trim() || !token.trim()) {
-      Alert.alert('Error', 'Please enter both URL and token');
+    if (!url.trim()) {
+      Alert.alert('Error', 'Please enter backend URL');
       return;
     }
 
     setTesting(true);
     try {
       // Configure API client
-      api.configure(url.trim(), token.trim());
+      api.configure(url.trim());
       
       // Test by fetching agents
       await api.getAgents();
       
       // Save config
       await AsyncStorage.setItem(STORAGE_KEY_URL, url.trim());
-      await AsyncStorage.setItem(STORAGE_KEY_TOKEN, token.trim());
       
       // Connect WebSocket
       api.connectWebSocket();
@@ -84,18 +79,6 @@ export function SettingsScreen({ onConfigured }: SettingsScreenProps) {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
-        />
-
-        <Text style={styles.label}>Auth Token</Text>
-        <TextInput
-          style={styles.input}
-          value={token}
-          onChangeText={setToken}
-          placeholder="Your secret token"
-          placeholderTextColor="#666666"
-          autoCapitalize="none"
-          autoCorrect={false}
-          secureTextEntry
         />
 
         <TouchableOpacity

@@ -13,7 +13,7 @@ import { ChatScreen } from './src/screens/ChatScreen';
 type Screen = 'settings' | 'agents' | 'chat';
 
 // Try to load config from config.json at build time
-let buildTimeConfig: { backendUrl?: string; token?: string } = {};
+let buildTimeConfig: { backendUrl?: string } = {};
 try {
   buildTimeConfig = require('./config.json');
 } catch (e) {
@@ -33,8 +33,7 @@ export default function App() {
     try {
       // First check build-time config
       if (buildTimeConfig.backendUrl) {
-        const token = buildTimeConfig.token || 'NOAUTH';
-        api.configure(buildTimeConfig.backendUrl, token);
+        api.configure(buildTimeConfig.backendUrl);
         api.connectWebSocket();
         setScreen('agents');
         setLoading(false);
@@ -43,10 +42,9 @@ export default function App() {
 
       // Fall back to AsyncStorage
       const url = await AsyncStorage.getItem('agent_shell_backend_url');
-      const token = await AsyncStorage.getItem('agent_shell_backend_token');
       
-      if (url && token) {
-        api.configure(url, token);
+      if (url) {
+        api.configure(url);
         api.connectWebSocket();
         setScreen('agents');
       }

@@ -3,6 +3,20 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Cleanup function
+cleanup() {
+    echo ""
+    echo "Shutting down..."
+    if [ -n "$BACKEND_PID" ]; then
+        kill $BACKEND_PID 2>/dev/null
+        echo "Backend stopped"
+    fi
+    exit 0
+}
+
+# Set trap before starting anything
+trap cleanup INT TERM EXIT
+
 # Get Tailscale IP
 TAILSCALE_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || ifconfig | grep "inet 100\." | awk '{print $2}')
 
@@ -42,6 +56,3 @@ fi
 echo "Starting Expo..."
 cd "$SCRIPT_DIR/dendrite/app"
 npx expo start
-
-# Cleanup on exit
-trap "kill $BACKEND_PID 2>/dev/null" EXIT

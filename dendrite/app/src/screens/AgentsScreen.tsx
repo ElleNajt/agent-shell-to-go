@@ -51,14 +51,26 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
   const loadMachines = async () => {
     try {
       const stored = await AsyncStorage.getItem('agent_shell_machines');
+      const savedCurrentUrl = await AsyncStorage.getItem('agent_shell_current_machine_url');
+      const currentUrl = api.getBaseUrl();
+      
       if (stored) {
         const list: Machine[] = JSON.parse(stored);
         setMachines(list);
-        // Set current machine from current API config
-        const currentUrl = api.getBaseUrl();
-        const current = list.find(m => m.url === currentUrl);
+        
+        // Use saved machine selection, or fall back to matching current URL
+        const current = savedCurrentUrl 
+          ? list.find(m => m.url === savedCurrentUrl)
+          : list.find(m => m.url === currentUrl);
+        
         if (current) {
           setCurrentMachine(current);
+          // Reconfigure API if saved machine differs from current
+          if (savedCurrentUrl && current.url !== currentUrl) {
+            api.configure(current.url, 'NOAUTH');
+            api.disconnectWebSocket();
+            api.connectWebSocket();
+          }
         } else if (currentUrl) {
           // Add current config as a machine
           const defaultMachine = { name: 'Default', url: currentUrl };
@@ -68,7 +80,6 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
         }
       } else {
         // Initialize with current config
-        const currentUrl = api.getBaseUrl();
         if (currentUrl) {
           const defaultMachine = { name: 'Default', url: currentUrl };
           setMachines([defaultMachine]);
@@ -86,6 +97,7 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     api.configure(machine.url, 'NOAUTH');
     api.disconnectWebSocket();
     api.connectWebSocket();
+    await AsyncStorage.setItem('agent_shell_current_machine_url', machine.url);
     setShowMachines(false);
     refetch();
   };

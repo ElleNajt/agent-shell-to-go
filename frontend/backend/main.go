@@ -181,6 +181,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/actions/new-dispatcher", s.handleNewDispatcher).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/actions/projects", s.handleListProjects).Methods("GET", "OPTIONS")
+	s.router.HandleFunc("/actions/big-red-button", s.handleBigRedButton).Methods("POST", "OPTIONS")
 	
 	// File explorer
 	s.router.HandleFunc("/files/list", s.handleListFiles).Methods("GET", "OPTIONS")
@@ -744,6 +745,18 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
 	}
+}
+
+func (s *Server) handleBigRedButton(w http.ResponseWriter, r *http.Request) {
+	log.Printf("BIG RED BUTTON pressed - interrupting all agents")
+
+	s.broadcast(WSEvent{
+		Type:    "big_red_button",
+		Payload: map[string]string{},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "interrupting_all"})
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {

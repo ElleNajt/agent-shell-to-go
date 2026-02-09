@@ -127,6 +127,12 @@ class ApiClient {
     return data.projects || [];
   }
 
+  async bigRedButton(): Promise<void> {
+    await this.request('/actions/big-red-button', {
+      method: 'POST',
+    });
+  }
+
   async listFiles(path: string): Promise<{ files: FileEntry[], path: string }> {
     const data = await this.request<{ files: FileEntry[] | null, path: string }>(
       `/files/list?path=${encodeURIComponent(path)}`
@@ -140,16 +146,18 @@ class ApiClient {
 
   connectWebSocket() {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already open');
       return;
     }
 
     // Convert http(s) to ws(s), include token in query param
     const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(this.token);
+    console.log('WebSocket connecting to:', wsUrl);
     
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected');
+      console.log('WebSocket connected to:', wsUrl);
       
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -168,11 +176,18 @@ class ApiClient {
 
     this.ws.onclose = () => {
       console.log('WebSocket disconnected, reconnecting in 5s...');
-      this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
+      this.ws = null;
+      if (!this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
+      }
     };
 
-    this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    this.ws.onerror = (error: any) => {
+      console.error('WebSocket error - URL:', wsUrl);
+      console.error('WebSocket error - type:', error?.type);
+      console.error('WebSocket error - message:', error?.message);
+      console.error('WebSocket readyState:', this.ws?.readyState);
+      // Close will be called after error, which triggers reconnect
     };
   }
 

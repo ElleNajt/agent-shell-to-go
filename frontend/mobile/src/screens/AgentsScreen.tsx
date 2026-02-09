@@ -117,6 +117,27 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     }
   };
 
+  const handleBigRedButton = async () => {
+    Alert.alert(
+      'STOP ALL AGENTS',
+      'This will interrupt ALL running agents. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'STOP ALL', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              await api.bigRedButton();
+            } catch (e) {
+              Alert.alert('Error', 'Failed to stop agents');
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const loadProjects = async () => {
     try {
       const p = await api.getProjects();
@@ -189,6 +210,14 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
           <Text style={styles.dropdownArrow}>▼</Text>
         </TouchableOpacity>
         <View style={styles.headerButtons}>
+          <TouchableOpacity 
+            onPress={handleBigRedButton} 
+            style={styles.bigRedButton}
+          >
+            <View style={styles.bigRedButtonInner}>
+              <Text style={styles.bigRedButtonText}>STOP</Text>
+            </View>
+          </TouchableOpacity>
           <TouchableOpacity onPress={refetch} style={styles.headerButton}>
             <Text style={styles.headerButtonText}>↻</Text>
           </TouchableOpacity>
@@ -544,7 +573,42 @@ const styles = StyleSheet.create({
   },
   headerButtons: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
+  },
+  bigRedButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#8B0000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#FF0000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 8,
+    borderWidth: 3,
+    borderColor: '#CC0000',
+  },
+  bigRedButtonInner: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#DC0000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderTopColor: '#FF4444',
+    borderLeftColor: '#FF4444',
+    borderBottomColor: '#990000',
+    borderRightColor: '#990000',
+  },
+  bigRedButtonText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
   headerButton: {
     width: 36,

@@ -454,13 +454,31 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Forward to Emacs via some mechanism
-	// For now, just broadcast that a message was requested
-	// The Emacs side will need to poll or we need a reverse connection
-
 	log.Printf("send request for session %s: %s", sessionID, req.Content)
 
-	// Broadcast as a "send_request" event - Emacs can listen for these
+	// Store the user message in the database immediately
+	// (Don't rely on Emacs echoing it back - that can fail)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO messages (session_id, role, content, timestamp)
+		VALUES (?, 'user', ?, ?)
+	`, sessionID, req.Content, timestamp)
+	if err != nil {
+		log.Printf("error storing user message: %v", err)
+		http.Error(w, "failed to store message", http.StatusInternalServerError)
+		return
+	}
+
+	// Update agent's last message
+	_, _ = s.db.Exec(`
+		UPDATE agents SET 
+			last_message = ?,
+			last_message_role = 'user',
+			last_activity = ?
+		WHERE session_id = ?
+	`, truncate(req.Content, 200), timestamp, sessionID)
+
+	// Broadcast send_request for Emacs to inject the message
 	s.broadcast(WSEvent{
 		Type: "send_request",
 		Payload: map[string]string{
@@ -470,7 +488,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
 }
 
 func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
@@ -1083,9 +1101,9 @@ func main() {
 	}
 
 	httpServer := &http.Server{
-		Handler:      server.router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Handler: server.router,
+		// Note: ReadTimeout and WriteTimeout are NOT set because they break WebSocket
+		// connections. WebSocket needs long-lived connections without read deadlines.
 	}
 
 	// Graceful shutdown

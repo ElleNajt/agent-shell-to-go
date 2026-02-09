@@ -46,6 +46,7 @@ class ApiClient {
   private ws: WebSocket | null = null;
   private wsListeners: Set<(event: WSEvent) => void> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
 
   configure(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -178,6 +179,17 @@ class ApiClient {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      
+      // Send periodic pings to keep connection alive
+      if (this.pingInterval) {
+        clearInterval(this.pingInterval);
+      }
+      this.pingInterval = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          // Send a ping message (server will ignore it but it keeps the connection active)
+          this.ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000); // Every 30 seconds
     };
 
     this.ws.onmessage = (event) => {
@@ -189,8 +201,8 @@ class ApiClient {
       }
     };
 
-    this.ws.onclose = () => {
-      console.log('WebSocket disconnected, reconnecting in 5s...');
+    this.ws.onclose = (event: any) => {
+      console.log('WebSocket disconnected - code:', event?.code, 'reason:', event?.reason, 'wasClean:', event?.wasClean);
       this.ws = null;
       if (!this.reconnectTimer) {
         this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
@@ -210,6 +222,10 @@ class ApiClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
     if (this.ws) {
       this.ws.close();

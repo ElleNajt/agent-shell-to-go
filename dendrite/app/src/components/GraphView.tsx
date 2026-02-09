@@ -154,81 +154,185 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       return dispatcher ? dispatcher.session_id : null;
     };
 
-    // Find root nodes (no effective parent)
-    const roots = agents.filter(a => !getEffectiveParent(a));
+    // Categorize agents:
+    // - True roots: meta agent or agents with no possible parent
+    // - Dispatchers: go to ring 1
+    // - Orphaned agents: non-dispatchers with no parent/dispatcher, go to ring 2
     const childrenOf = new Map<string, Agent[]>();
+    const trueRoots: Agent[] = [];
+    const orphanedAgents: Agent[] = [];
 
-    // Group children by effective parent
+    // Group children by effective parent, identify roots and orphans
     agents.forEach(agent => {
       const parentId = getEffectiveParent(agent);
       if (parentId) {
         const siblings = childrenOf.get(parentId) || [];
         siblings.push(agent);
         childrenOf.set(parentId, siblings);
+      } else {
+        // No parent - is this a true root or an orphan?
+        const isMetaAgent = agent.project === '.claude-meta' || agent.project.endsWith('/.claude-meta');
+        const isDispatcher = agent.buffer_name.toLowerCase().includes('dispatcher');
+        
+        if (isMetaAgent) {
+          // Meta agent is always a true root
+          trueRoots.push(agent);
+        } else if (isDispatcher) {
+          // Dispatcher without meta agent - true root at ring 1 level
+          trueRoots.push(agent);
+        } else {
+          // Regular agent with no parent/dispatcher - orphan, goes to ring 2
+          orphanedAgents.push(agent);
+        }
       }
     });
 
-    // Radial layout - place nodes in concentric circles
-    const layoutRadial = (agent: Agent, cx: number, cy: number, angle: number, radius: number, arcSpan: number) => {
-      const x = cx + Math.cos(angle) * radius;
-      const y = cy + Math.sin(angle) * radius;
+    // Ring-based layout: collect nodes by depth, then distribute each ring evenly
+    // This prevents overlap between nodes from different subtrees
+    // Ring 0: meta agent (center)
+    // Ring 1: dispatchers
+    // Ring 2: worker agents (including orphans)
+    
+    // Step 1: Assign depth to each node via BFS
+    const depthOf = new Map<string, number>();
+    const nodesByDepth: Agent[][] = [];
+    
+    const assignDepths = (agent: Agent, depth: number) => {
+      depthOf.set(agent.session_id, depth);
+      if (!nodesByDepth[depth]) nodesByDepth[depth] = [];
+      nodesByDepth[depth].push(agent);
       
       const children = childrenOf.get(agent.session_id) || [];
-      
-      nodeMap.set(agent.session_id, {
-        x,
-        y,
-        agent,
-        children: children.map(c => c.session_id),
-      });
-
-      // Add edges to children
-      children.forEach(child => {
-        edgeList.push({ from: agent.session_id, to: child.session_id });
-      });
-
-      // Layout children in an arc
-      if (children.length > 0) {
-        const childRadius = radius + 130;
-        const childArcSpan = Math.min(arcSpan, Math.PI * 0.8); // Limit spread
-        const startAngle = angle - childArcSpan / 2;
-        const angleStep = children.length > 1 ? childArcSpan / (children.length - 1) : 0;
-
-        children.forEach((child, i) => {
-          const childAngle = children.length === 1 ? angle : startAngle + angleStep * i;
-          layoutRadial(child, cx, cy, childAngle, childRadius, childArcSpan / children.length);
-        });
-      }
+      children.forEach(child => assignDepths(child, depth + 1));
     };
-
-    // Layout roots
-    if (roots.length === 1) {
-      // Single root at center
-      const root = roots[0];
-      const children = childrenOf.get(root.session_id) || [];
+    
+    trueRoots.forEach(root => assignDepths(root, 0));
+    
+    // Add orphaned agents to ring 2 (or create it if needed)
+    if (orphanedAgents.length > 0) {
+      if (!nodesByDepth[2]) nodesByDepth[2] = [];
+      orphanedAgents.forEach(agent => {
+        depthOf.set(agent.session_id, 2);
+        nodesByDepth[2].push(agent);
+      });
+    }
+    
+    // Step 2: Calculate radius for each ring based on node count
+    // Ensure minimum spacing of 200px between nodes on each ring
+    const minSpacing = 200;
+    const ringRadii: number[] = [];
+    let baseRadius = 0; // Ring 0 starts at center if single root
+    
+    nodesByDepth.forEach((nodesAtDepth, depth) => {
+      if (depth === 0 && nodesAtDepth.length === 1) {
+        // Single root at center
+        ringRadii[depth] = 0;
+        baseRadius = 160; // Next ring starts here
+      } else {
+        // Calculate radius needed for this many nodes with minSpacing
+        const circumference = nodesAtDepth.length * minSpacing;
+        const neededRadius = circumference / (2 * Math.PI);
+        // Ensure rings don't shrink and maintain minimum gap
+        const minRadius = baseRadius + (depth === 0 ? 0 : 120);
+        ringRadii[depth] = Math.max(neededRadius, minRadius);
+        baseRadius = ringRadii[depth];
+      }
+    });
+    
+    // Step 3: Position ring 0 and ring 1 first (roots and dispatchers)
+    // Then position ring 2+ agents near their parent/project dispatcher
+    
+    // Track dispatcher angles by project for positioning children nearby
+    const dispatcherAngles = new Map<string, number>();
+    
+    // Position ring 0 (meta agent / roots)
+    if (nodesByDepth[0]) {
+      const radius = ringRadii[0];
+      nodesByDepth[0].forEach((agent, i) => {
+        let x: number, y: number, angle: number;
+        
+        if (radius === 0) {
+          x = centerX;
+          y = centerY;
+          angle = 0;
+        } else {
+          angle = (2 * Math.PI * i) / nodesByDepth[0].length - Math.PI / 2;
+          x = centerX + Math.cos(angle) * radius;
+          y = centerY + Math.sin(angle) * radius;
+        }
+        
+        const children = childrenOf.get(agent.session_id) || [];
+        nodeMap.set(agent.session_id, { x, y, agent, children: children.map(c => c.session_id) });
+        children.forEach(child => edgeList.push({ from: agent.session_id, to: child.session_id }));
+      });
+    }
+    
+    // Position ring 1 (dispatchers) and record their angles
+    if (nodesByDepth[1]) {
+      const radius = ringRadii[1];
+      nodesByDepth[1].forEach((agent, i) => {
+        const angle = (2 * Math.PI * i) / nodesByDepth[1].length - Math.PI / 2;
+        const x = centerX + Math.cos(angle) * radius;
+        const y = centerY + Math.sin(angle) * radius;
+        
+        // Record angle for this project's dispatcher
+        dispatcherAngles.set(agent.project, angle);
+        
+        const children = childrenOf.get(agent.session_id) || [];
+        nodeMap.set(agent.session_id, { x, y, agent, children: children.map(c => c.session_id) });
+        children.forEach(child => edgeList.push({ from: agent.session_id, to: child.session_id }));
+      });
+    }
+    
+    // Position ring 2+ agents grouped by project, near their dispatcher
+    for (let depth = 2; depth < nodesByDepth.length; depth++) {
+      if (!nodesByDepth[depth]) continue;
+      const radius = ringRadii[depth];
       
-      nodeMap.set(root.session_id, {
-        x: centerX,
-        y: centerY,
-        agent: root,
-        children: children.map(c => c.session_id),
+      // Sort agents by project so same-project agents are adjacent
+      const sortedAgents = [...nodesByDepth[depth]].sort((a, b) => 
+        a.project.localeCompare(b.project)
+      );
+      
+      // Group by project
+      const byProject = new Map<string, Agent[]>();
+      sortedAgents.forEach(agent => {
+        const list = byProject.get(agent.project) || [];
+        list.push(agent);
+        byProject.set(agent.project, list);
       });
-
-      // Children spread around in a circle
-      children.forEach((child, i) => {
-        edgeList.push({ from: root.session_id, to: child.session_id });
-        const angle = (2 * Math.PI * i) / children.length - Math.PI / 2; // Start from top
-        layoutRadial(child, centerX, centerY, angle, 140, (2 * Math.PI) / children.length);
-      });
-    } else {
-      // Multiple roots spread in a circle - scale radius based on count
-      // Ensure minimum spacing of ~120px between nodes on the circle
-      const minSpacing = 120;
-      const circumference = roots.length * minSpacing;
-      const rootRadius = Math.max(150, circumference / (2 * Math.PI));
-      roots.forEach((root, i) => {
-        const angle = (2 * Math.PI * i) / roots.length - Math.PI / 2;
-        layoutRadial(root, centerX, centerY, angle, rootRadius, (2 * Math.PI) / roots.length);
+      
+      // Position each project's agents near their dispatcher
+      const projects = Array.from(byProject.keys());
+      const totalAgents = sortedAgents.length;
+      let agentIndex = 0;
+      
+      projects.forEach(project => {
+        const projectAgents = byProject.get(project)!;
+        const dispatcherAngle = dispatcherAngles.get(project);
+        
+        projectAgents.forEach((agent, i) => {
+          let angle: number;
+          
+          if (dispatcherAngle !== undefined) {
+            // Position near dispatcher, spreading agents around it
+            const spread = (projectAgents.length - 1) * 0.15; // ~0.15 radians between agents
+            const offset = i - (projectAgents.length - 1) / 2;
+            angle = dispatcherAngle + offset * 0.15;
+          } else {
+            // No dispatcher for this project - distribute evenly in remaining space
+            angle = (2 * Math.PI * agentIndex) / totalAgents - Math.PI / 2;
+          }
+          
+          const x = centerX + Math.cos(angle) * radius;
+          const y = centerY + Math.sin(angle) * radius;
+          
+          const children = childrenOf.get(agent.session_id) || [];
+          nodeMap.set(agent.session_id, { x, y, agent, children: children.map(c => c.session_id) });
+          children.forEach(child => edgeList.push({ from: agent.session_id, to: child.session_id }));
+          
+          agentIndex++;
+        });
       });
     }
 

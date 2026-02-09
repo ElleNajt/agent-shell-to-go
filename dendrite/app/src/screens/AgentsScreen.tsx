@@ -138,6 +138,16 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     );
   };
 
+  const handlePruneSessions = async () => {
+    try {
+      await api.pruneSessions();
+      // The backend will broadcast close events for pruned sessions,
+      // which will update the UI via WebSocket
+    } catch (e) {
+      Alert.alert('Error', 'Failed to prune sessions');
+    }
+  };
+
   const loadProjects = async () => {
     try {
       const p = await api.getProjects();
@@ -217,6 +227,9 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
             <View style={styles.bigRedButtonInner}>
               <Text style={styles.bigRedButtonText}>STOP</Text>
             </View>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handlePruneSessions} style={styles.headerButton}>
+            <Text style={styles.headerButtonText}>🧹</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={refetch} style={styles.headerButton}>
             <Text style={styles.headerButtonText}>↻</Text>

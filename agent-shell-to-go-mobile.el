@@ -465,7 +465,9 @@ View and interact with agents from the mobile app."
           ("new_agent_request"
            (agent-shell-to-go-mobile--handle-new-agent-request event-payload))
           ("new_dispatcher_request"
-           (agent-shell-to-go-mobile--handle-new-dispatcher-request event-payload))))
+           (agent-shell-to-go-mobile--handle-new-dispatcher-request event-payload))
+          ("check_sessions_request"
+           (agent-shell-to-go-mobile--handle-check-sessions-request event-payload))))
     (error
      (agent-shell-to-go-mobile--debug "WebSocket message error: %s" err))))
 
@@ -556,6 +558,19 @@ Spawns a new dispatcher for a project."
       (when (and path (file-directory-p path))
         (let ((default-directory path))
           (agent-shell))))))
+
+(defun agent-shell-to-go-mobile--handle-check-sessions-request (_payload)
+  "Handle a check_sessions_request from the backend.
+Reports all alive session IDs back to the backend for pruning dead sessions."
+  (agent-shell-to-go-mobile--debug "Checking alive sessions")
+  (let ((alive-session-ids
+         (cl-loop for buf in agent-shell-to-go-mobile--active-buffers
+                  when (buffer-live-p buf)
+                  collect (buffer-local-value 'agent-shell-to-go-mobile--session-id buf))))
+    (agent-shell-to-go-mobile--debug "Reporting %d alive sessions" (length alive-session-ids))
+    (agent-shell-to-go-mobile--post
+     "/events/alive-sessions"
+     `((session_ids . ,(vconcat alive-session-ids))))))
 
 ;;; Integration with meta-agent-shell
 

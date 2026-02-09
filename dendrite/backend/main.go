@@ -43,16 +43,16 @@ type Server struct {
 
 // Agent represents an agent session
 type Agent struct {
-	SessionID       string    `json:"session_id"`
-	BufferName      string    `json:"buffer_name"`
-	Project         string    `json:"project"`
-	ProjectPath     string    `json:"project_path"`
-	ParentSessionID *string   `json:"parent_session_id"`
-	Status          string    `json:"status"`
-	LastMessage     string    `json:"last_message"`
-	LastMessageRole string    `json:"last_message_role"`
-	LastActivity    time.Time `json:"last_activity"`
-	CreatedAt       time.Time `json:"created_at"`
+	SessionID       string     `json:"session_id"`
+	BufferName      string     `json:"buffer_name"`
+	Project         string     `json:"project"`
+	ProjectPath     string     `json:"project_path"`
+	ParentSessionID *string    `json:"parent_session_id"`
+	Status          string     `json:"status"`
+	LastMessage     string     `json:"last_message"`
+	LastMessageRole string     `json:"last_message_role"`
+	LastActivity    time.Time  `json:"last_activity"`
+	CreatedAt       time.Time  `json:"created_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
 }
 
@@ -186,13 +186,17 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST", "OPTIONS")
-	
+
 	// Actions for spawning new agents
 	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/actions/new-dispatcher", s.handleNewDispatcher).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/actions/projects", s.handleListProjects).Methods("GET", "OPTIONS")
 	s.router.HandleFunc("/actions/big-red-button", s.handleBigRedButton).Methods("POST", "OPTIONS")
-	
+	s.router.HandleFunc("/actions/prune-sessions", s.handlePruneSessions).Methods("POST", "OPTIONS")
+
+	// Events from Emacs for session management
+	s.router.HandleFunc("/events/alive-sessions", s.handleAliveSessions).Methods("POST", "OPTIONS")
+
 	// File explorer
 	s.router.HandleFunc("/files/list", s.handleListFiles).Methods("GET", "OPTIONS")
 	s.router.HandleFunc("/files/read", s.handleReadFile).Methods("GET", "OPTIONS")
@@ -544,9 +548,9 @@ func (s *Server) handleCloseAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNewAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string `json:"name"`
-		Path    string `json:"path"`
-		Task    string `json:"task"`
+		Name string `json:"name"`
+		Path string `json:"path"`
+		Task string `json:"task"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -713,8 +717,8 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	// Determine content type
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	isImage := ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "webp" || ext == "svg"
-	isText := ext == "txt" || ext == "md" || ext == "org" || ext == "el" || ext == "py" || ext == "js" || 
-		ext == "ts" || ext == "tsx" || ext == "jsx" || ext == "go" || ext == "rs" || ext == "json" || 
+	isText := ext == "txt" || ext == "md" || ext == "org" || ext == "el" || ext == "py" || ext == "js" ||
+		ext == "ts" || ext == "tsx" || ext == "jsx" || ext == "go" || ext == "rs" || ext == "json" ||
 		ext == "yaml" || ext == "yml" || ext == "toml" || ext == "sh" || ext == "bash" || ext == "zsh" ||
 		ext == "css" || ext == "html" || ext == "xml" || ext == "sql" || ext == "c" || ext == "cpp" ||
 		ext == "h" || ext == "hpp" || ext == "java" || ext == "rb" || ext == "lua" || ext == ""
@@ -774,13 +778,91 @@ func (s *Server) handleBigRedButton(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "interrupting_all"})
 }
 
+func (s *Server) handlePruneSessions(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Prune sessions requested - asking Emacs for alive sessions")
+
+	// Broadcast request to Emacs to report alive sessions
+	s.broadcast(WSEvent{
+		Type:    "check_sessions_request",
+		Payload: map[string]string{},
+	})
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "checking"})
+}
+
+func (s *Server) handleAliveSessions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionIDs []string `json:"session_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received alive sessions from Emacs: %d sessions", len(req.SessionIDs))
+
+	// Build a set of alive session IDs for fast lookup
+	aliveSet := make(map[string]bool)
+	for _, id := range req.SessionIDs {
+		aliveSet[id] = true
+	}
+
+	// Get all unclosed sessions from the database
+	rows, err := s.db.Query(`SELECT session_id FROM agents WHERE closed_at IS NULL`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var deadSessions []string
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			continue
+		}
+		if !aliveSet[sessionID] {
+			deadSessions = append(deadSessions, sessionID)
+		}
+	}
+
+	// Mark dead sessions as closed
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, sessionID := range deadSessions {
+		_, err := s.db.Exec(`
+			UPDATE agents SET closed_at = ?, status = 'closed'
+			WHERE session_id = ?
+		`, now, sessionID)
+		if err != nil {
+			log.Printf("Error closing dead session %s: %v", sessionID, err)
+		} else {
+			log.Printf("Pruned dead session: %s", sessionID)
+			// Broadcast close event so UI updates
+			s.broadcast(WSEvent{
+				Type: "agent_close",
+				Payload: AgentCloseEvent{
+					SessionID: sessionID,
+					Timestamp: now,
+				},
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"pruned_count": len(deadSessions),
+		"pruned":       deadSessions,
+	})
+}
+
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	// This will be populated by Emacs via a request/response pattern
 	// For now, broadcast a request and return a placeholder
 	// TODO: implement request/response pattern for this
-	
+
 	s.broadcast(WSEvent{
-		Type: "list_projects_request",
+		Type:    "list_projects_request",
 		Payload: map[string]string{},
 	})
 
@@ -927,7 +1009,7 @@ func main() {
 	}
 	isLocalhost := host == "127.0.0.1" || host == "localhost"
 	isTailscale := strings.HasPrefix(host, "100.")
-	
+
 	if !isTailscale && !isLocalhost {
 		log.Printf("WARNING: listen address %s doesn't look like a Tailscale IP (100.x.x.x)", host)
 		log.Printf("This server should only be exposed on your Tailscale network!")

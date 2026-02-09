@@ -133,6 +133,12 @@ class ApiClient {
     });
   }
 
+  async pruneSessions(): Promise<void> {
+    await this.request('/actions/prune-sessions', {
+      method: 'POST',
+    });
+  }
+
   async listFiles(path: string): Promise<{ files: FileEntry[], path: string }> {
     const data = await this.request<{ files: FileEntry[] | null, path: string }>(
       `/files/list?path=${encodeURIComponent(path)}`

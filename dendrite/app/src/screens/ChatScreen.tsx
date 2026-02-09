@@ -156,7 +156,9 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         {isUser ? (
           <Text style={styles.messageText}>{item.content}</Text>
         ) : (
-          <Markdown style={markdownStyles}>{item.content}</Markdown>
+          <View style={styles.markdownContainer}>
+            <Markdown style={markdownStyles}>{item.content}</Markdown>
+          </View>
         )}
         <Text style={styles.timestamp}>
           {formatTime(item.timestamp)}
@@ -350,6 +352,21 @@ const markdownStyles = StyleSheet.create({
   list_item: {
     flexDirection: 'row',
     marginVertical: 2,
+    flexShrink: 1,
+    flexWrap: 'wrap',
+  },
+  bullet_list_content: {
+    flex: 1,
+  },
+  ordered_list_content: {
+    flex: 1,
+  },
+  paragraph: {
+    flexShrink: 1,
+    flexWrap: 'wrap',
+  },
+  text: {
+    flexShrink: 1,
   },
   link: {
     color: '#007AFF',
@@ -487,6 +504,11 @@ const styles = StyleSheet.create({
   agentMessage: {
     backgroundColor: '#2D2D2D',
     alignSelf: 'flex-start',
+  },
+  markdownContainer: {
+    flex: 0,
+    flexShrink: 1,
+    width: '100%',
   },
   toolMessage: {
     backgroundColor: '#1A1A2E',

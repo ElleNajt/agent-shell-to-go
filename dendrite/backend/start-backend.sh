@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Start the dendrite backend server
 # Usage: ./start-backend.sh [--build]
 

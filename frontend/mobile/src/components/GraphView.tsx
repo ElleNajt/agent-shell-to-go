@@ -119,16 +119,52 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     const nodeMap = new Map<string, NodePosition>();
     const edgeList: { from: string; to: string }[] = [];
 
-    // Find root nodes (no parent)
-    const roots = agents.filter(a => !a.parent_session_id);
+    // Build a map of project -> dispatcher for fallback parenting
+    const dispatcherByProject = new Map<string, Agent>();
+    let metaAgent: Agent | null = null;
+    
+    agents.forEach(agent => {
+      if (agent.buffer_name.toLowerCase().includes('dispatcher')) {
+        dispatcherByProject.set(agent.project, agent);
+      }
+      // Find the meta agent (.claude-meta project)
+      if (agent.project === '.claude-meta' || agent.project.endsWith('/.claude-meta')) {
+        metaAgent = agent;
+      }
+    });
+
+    // Infer parent relationships:
+    // - Dispatchers -> meta agent (if exists)
+    // - Other agents -> their project's dispatcher (if exists)
+    const getEffectiveParent = (agent: Agent): string | null => {
+      if (agent.parent_session_id) return agent.parent_session_id;
+      
+      // Meta agent is the root
+      if (agent.project === '.claude-meta' || agent.project.endsWith('/.claude-meta')) {
+        return null;
+      }
+      
+      // Dispatchers are children of the meta agent
+      if (agent.buffer_name.toLowerCase().includes('dispatcher')) {
+        return metaAgent ? metaAgent.session_id : null;
+      }
+      
+      // Other agents are children of their project's dispatcher
+      const dispatcher = dispatcherByProject.get(agent.project);
+      return dispatcher ? dispatcher.session_id : null;
+    };
+
+    // Find root nodes (no effective parent)
+    const roots = agents.filter(a => !getEffectiveParent(a));
     const childrenOf = new Map<string, Agent[]>();
 
-    // Group children by parent
+    // Group children by effective parent
     agents.forEach(agent => {
-      if (agent.parent_session_id) {
-        const siblings = childrenOf.get(agent.parent_session_id) || [];
+      const parentId = getEffectiveParent(agent);
+      if (parentId) {
+        const siblings = childrenOf.get(parentId) || [];
         siblings.push(agent);
-        childrenOf.set(agent.parent_session_id, siblings);
+        childrenOf.set(parentId, siblings);
       }
     });
 
@@ -185,10 +221,14 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
         layoutRadial(child, centerX, centerY, angle, 140, (2 * Math.PI) / children.length);
       });
     } else {
-      // Multiple roots spread in a circle
+      // Multiple roots spread in a circle - scale radius based on count
+      // Ensure minimum spacing of ~120px between nodes on the circle
+      const minSpacing = 120;
+      const circumference = roots.length * minSpacing;
+      const rootRadius = Math.max(150, circumference / (2 * Math.PI));
       roots.forEach((root, i) => {
         const angle = (2 * Math.PI * i) / roots.length - Math.PI / 2;
-        layoutRadial(root, centerX, centerY, angle, 0, (2 * Math.PI) / roots.length);
+        layoutRadial(root, centerX, centerY, angle, rootRadius, (2 * Math.PI) / roots.length);
       });
     }
 

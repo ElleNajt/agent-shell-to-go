@@ -36,14 +36,7 @@ cd dendrite/backend
 This will:
 - Auto-detect your Tailscale IP
 - Create a token file at `~/.agent-shell-api-token` if needed
-- Print the Emacs configuration to use
-
-2. **Configure Emacs** (add to your config):
-```elisp
-(setq agent-shell-to-go-mobile-backend-url "http://<tailscale-ip>:8080")
-(setq agent-shell-to-go-mobile-token-file "~/.agent-shell-api-token")
-(agent-shell-to-go-mobile-setup)
-```
+- Configure Emacs automatically via emacsclient
 
 ### In the mobile app:
 

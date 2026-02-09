@@ -28,11 +28,12 @@ if [ "$1" = "--build" ] || [ ! -f "./dendrite-backend" ]; then
     go build -o dendrite-backend .
 fi
 
-echo "Starting backend on $TAILSCALE_IP:8080"
-echo ""
-echo "Configure Emacs with:"
-echo "  (setq agent-shell-to-go-mobile-backend-url \"http://$TAILSCALE_IP:8080\")"
-echo "  (setq agent-shell-to-go-mobile-token-file \"$TOKEN_FILE\")"
-echo ""
+# Configure Emacs
+echo "Configuring Emacs..."
+emacsclient --eval "(progn
+  (setq agent-shell-to-go-mobile-backend-url \"http://$TAILSCALE_IP:8080\")
+  (setq agent-shell-to-go-mobile-token-file \"$TOKEN_FILE\")
+  (agent-shell-to-go-mobile-setup))" >/dev/null 2>&1 && echo "Emacs configured" || echo "Warning: Could not configure Emacs (is it running?)"
 
+echo "Starting backend on $TAILSCALE_IP:8080"
 exec ./dendrite-backend --listen "$TAILSCALE_IP:8080" --token-file "$TOKEN_FILE"

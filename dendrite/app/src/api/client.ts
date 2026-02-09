@@ -149,9 +149,11 @@ class ApiClient {
     });
   }
 
-  async listFiles(path: string): Promise<{ files: FileEntry[], path: string }> {
+  async listFiles(path: string, showHidden = false): Promise<{ files: FileEntry[], path: string }> {
+    const params = new URLSearchParams({ path });
+    if (showHidden) params.append('show_hidden', 'true');
     const data = await this.request<{ files: FileEntry[] | null, path: string }>(
-      `/files/list?path=${encodeURIComponent(path)}`
+      `/files/list?${params.toString()}`
     );
     return { files: data.files || [], path: data.path };
   }

@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Image,
   ScrollView,
+  Switch,
 } from 'react-native';
 import { api, FileEntry, FileContent } from '../api/client';
 
@@ -23,12 +24,13 @@ export function FileExplorerScreen({ initialPath, onClose }: FileExplorerScreenP
   const [error, setError] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<FileContent | null>(null);
   const [pathHistory, setPathHistory] = useState<string[]>([initialPath]);
+  const [showHidden, setShowHidden] = useState(false);
 
-  const loadDirectory = async (path: string) => {
+  const loadDirectory = async (path: string, hidden = showHidden) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.listFiles(path);
+      const result = await api.listFiles(path, hidden);
       // Sort: directories first, then alphabetically
       const sorted = result.files.sort((a, b) => {
         if (a.is_dir && !b.is_dir) return -1;
@@ -42,6 +44,12 @@ export function FileExplorerScreen({ initialPath, onClose }: FileExplorerScreenP
     } finally {
       setLoading(false);
     }
+  };
+  
+  const toggleShowHidden = () => {
+    const newValue = !showHidden;
+    setShowHidden(newValue);
+    loadDirectory(currentPath, newValue);
   };
 
   const openFile = async (path: string) => {
@@ -204,6 +212,16 @@ export function FileExplorerScreen({ initialPath, onClose }: FileExplorerScreenP
 
       <View style={styles.pathBar}>
         <Text style={styles.pathText} numberOfLines={1}>{displayPath}</Text>
+        <View style={styles.hiddenToggle}>
+          <Text style={styles.hiddenToggleLabel}>Hidden</Text>
+          <Switch
+            value={showHidden}
+            onValueChange={toggleShowHidden}
+            trackColor={{ false: '#444', true: '#007AFF' }}
+            thumbColor="#fff"
+            ios_backgroundColor="#444"
+          />
+        </View>
       </View>
 
       {loading ? (
@@ -277,15 +295,29 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   pathBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     padding: 10,
     backgroundColor: '#1E1E1E',
     borderBottomWidth: 1,
     borderBottomColor: '#333',
   },
   pathText: {
+    flex: 1,
     color: '#888',
     fontSize: 12,
     fontFamily: 'monospace',
+  },
+  hiddenToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  hiddenToggleLabel: {
+    color: '#888',
+    fontSize: 12,
+    marginRight: 6,
   },
   list: {
     flex: 1,

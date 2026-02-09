@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/gorilla/websocket"
 	_ "github.com/mattn/go-sqlite3"
+	"nhooyr.io/websocket"
 )
 
 // Config holds server configuration
@@ -37,7 +37,6 @@ type Server struct {
 	router    *mux.Router
 	wsClients map[*websocket.Conn]bool
 	wsMutex   sync.RWMutex
-	upgrader  websocket.Upgrader
 }
 
 // Agent represents an agent session
@@ -110,12 +109,6 @@ func NewServer(config Config) (*Server, error) {
 		db:        db,
 		router:    mux.NewRouter(),
 		wsClients: make(map[*websocket.Conn]bool),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// Allow connections from tailnet only (already enforced by listener)
-				return true
-			},
-		},
 	}
 
 	if err := s.initDB(); err != nil {
@@ -702,10 +695,13 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		Size  int64  `json:"size"`
 	}
 
+	// Check if hidden files should be shown
+	showHidden := r.URL.Query().Get("show_hidden") == "true"
+
 	var files []FileEntry
 	for _, entry := range entries {
-		// Skip hidden files except .claude
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".claude" {
+		// Skip hidden files unless show_hidden=true, but always show .claude
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".claude" && !showHidden {
 			continue
 		}
 
@@ -1113,78 +1109,43 @@ func (s *Server) handleDebugMessages(w http.ResponseWriter, r *http.Request) {
 
 // WebSocket handling
 
-// WSClient represents a connected WebSocket client
-type WSClient struct {
-	conn       *websocket.Conn
-	authorized bool
-}
-
-const (
-	// Time allowed to write a message to the peer
-	wsWriteWait = 10 * time.Second
-	// Time allowed to read the next pong message from the peer
-	wsPongWait = 60 * time.Second
-	// Send pings to peer with this period (must be less than pongWait)
-	wsPingPeriod = 54 * time.Second
-)
-
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Tailscale is the auth layer - all connections are authorized
-	conn, err := s.upgrader.Upgrade(w, r, nil)
+	// Accept the WebSocket connection with permissive options
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// Allow any origin (Tailscale is the auth layer)
+		InsecureSkipVerify: true,
+	})
 	if err != nil {
 		log.Printf("websocket upgrade error: %v", err)
 		return
 	}
 
+	remoteAddr := r.RemoteAddr
+
 	s.wsMutex.Lock()
 	s.wsClients[conn] = true
 	s.wsMutex.Unlock()
 
-	log.Printf("websocket client connected: %s", conn.RemoteAddr())
-
-	// Set up ping/pong handlers for keepalive
-	conn.SetReadDeadline(time.Now().Add(wsPongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(wsPongWait))
-		return nil
-	})
-
-	// Goroutine to send periodic pings
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(wsPingPeriod)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
+	log.Printf("websocket client connected: %s", remoteAddr)
 
 	// Read loop - keeps connection alive and handles cleanup
 	go func() {
 		defer func() {
-			close(done)
 			s.wsMutex.Lock()
 			delete(s.wsClients, conn)
 			s.wsMutex.Unlock()
-			conn.Close()
-			log.Printf("websocket client disconnected: %s", conn.RemoteAddr())
+			conn.Close(websocket.StatusNormalClosure, "")
+			log.Printf("websocket client disconnected: %s", remoteAddr)
 		}()
 
+		ctx := context.Background()
 		for {
-			_, _, err := conn.ReadMessage()
+			_, msg, err := conn.Read(ctx)
 			if err != nil {
+				log.Printf("websocket read error from %s: %v", remoteAddr, err)
 				return
 			}
-			// Reset read deadline on any message
-			conn.SetReadDeadline(time.Now().Add(wsPongWait))
+			log.Printf("websocket message from %s: %s", remoteAddr, string(msg))
 		}
 	}()
 }
@@ -1199,11 +1160,12 @@ func (s *Server) broadcast(event WSEvent) {
 	s.wsMutex.RLock()
 	defer s.wsMutex.RUnlock()
 
+	ctx := context.Background()
 	for conn, authorized := range s.wsClients {
 		if !authorized {
 			continue // Only send to authorized clients
 		}
-		err := conn.WriteMessage(websocket.TextMessage, data)
+		err := conn.Write(ctx, websocket.MessageText, data)
 		if err != nil {
 			log.Printf("error sending to websocket: %v", err)
 		}

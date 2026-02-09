@@ -46,6 +46,7 @@ type Agent struct {
 	SessionID       string    `json:"session_id"`
 	BufferName      string    `json:"buffer_name"`
 	Project         string    `json:"project"`
+	ProjectPath     string    `json:"project_path"`
 	ParentSessionID *string   `json:"parent_session_id"`
 	Status          string    `json:"status"`
 	LastMessage     string    `json:"last_message"`
@@ -69,6 +70,7 @@ type AgentSpawnEvent struct {
 	SessionID       string  `json:"session_id"`
 	BufferName      string  `json:"buffer_name"`
 	Project         string  `json:"project"`
+	ProjectPath     string  `json:"project_path"`
 	ParentSessionID *string `json:"parent_session_id"`
 	Timestamp       string  `json:"timestamp"`
 }
@@ -131,6 +133,7 @@ func (s *Server) initDB() error {
 		session_id TEXT PRIMARY KEY,
 		buffer_name TEXT NOT NULL,
 		project TEXT NOT NULL,
+		project_path TEXT DEFAULT '',
 		parent_session_id TEXT,
 		status TEXT DEFAULT 'ready',
 		last_message TEXT DEFAULT '',
@@ -155,7 +158,14 @@ func (s *Server) initDB() error {
 	CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_session_id);
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add project_path column if it doesn't exist
+	_, _ = s.db.Exec(`ALTER TABLE agents ADD COLUMN project_path TEXT DEFAULT ''`)
+
+	return nil
 }
 
 func (s *Server) setupRoutes() {
@@ -260,15 +270,16 @@ func (s *Server) handleAgentSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO agents (session_id, buffer_name, project, parent_session_id, status, created_at)
-		VALUES (?, ?, ?, ?, 'ready', ?)
+		INSERT INTO agents (session_id, buffer_name, project, project_path, parent_session_id, status, created_at)
+		VALUES (?, ?, ?, ?, ?, 'ready', ?)
 		ON CONFLICT(session_id) DO UPDATE SET
 			buffer_name = excluded.buffer_name,
 			project = excluded.project,
+			project_path = excluded.project_path,
 			parent_session_id = excluded.parent_session_id,
 			status = 'ready',
 			closed_at = NULL
-	`, event.SessionID, event.BufferName, event.Project, event.ParentSessionID, event.Timestamp)
+	`, event.SessionID, event.BufferName, event.Project, event.ProjectPath, event.ParentSessionID, event.Timestamp)
 
 	if err != nil {
 		log.Printf("error inserting agent: %v", err)
@@ -369,7 +380,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	showClosed := r.URL.Query().Get("include_closed") == "true"
 
 	query := `
-		SELECT session_id, buffer_name, project, parent_session_id, 
+		SELECT session_id, buffer_name, project, project_path, parent_session_id, 
 		       status, last_message, last_message_role, last_activity, created_at, closed_at
 		FROM agents
 	`
@@ -388,16 +399,20 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	var agents []Agent
 	for rows.Next() {
 		var a Agent
+		var projectPath sql.NullString
 		var parentID, lastMsg, lastMsgRole sql.NullString
 		var closedAt sql.NullTime
 
-		err := rows.Scan(&a.SessionID, &a.BufferName, &a.Project, &parentID,
+		err := rows.Scan(&a.SessionID, &a.BufferName, &a.Project, &projectPath, &parentID,
 			&a.Status, &lastMsg, &lastMsgRole, &a.LastActivity, &a.CreatedAt, &closedAt)
 		if err != nil {
 			log.Printf("error scanning agent: %v", err)
 			continue
 		}
 
+		if projectPath.Valid {
+			a.ProjectPath = projectPath.String
+		}
 		if parentID.Valid {
 			a.ParentSessionID = &parentID.String
 		}
@@ -584,7 +599,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 	// Security: only allow listing within known project directories
 	// Get the list of valid project paths from the database
-	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL`)
+	rows, err := s.db.Query(`SELECT DISTINCT project_path FROM agents WHERE closed_at IS NULL AND project_path != ''`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -593,9 +608,9 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 	var validPaths []string
 	for rows.Next() {
-		var project string
-		if err := rows.Scan(&project); err == nil {
-			validPaths = append(validPaths, project)
+		var projectPath string
+		if err := rows.Scan(&projectPath); err == nil {
+			validPaths = append(validPaths, projectPath)
 		}
 	}
 
@@ -656,7 +671,7 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Security: only allow reading within known project directories
-	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL`)
+	rows, err := s.db.Query(`SELECT DISTINCT project_path FROM agents WHERE closed_at IS NULL AND project_path != ''`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -665,9 +680,9 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 
 	var validPaths []string
 	for rows.Next() {
-		var project string
-		if err := rows.Scan(&project); err == nil {
-			validPaths = append(validPaths, project)
+		var projectPath string
+		if err := rows.Scan(&projectPath); err == nil {
+			validPaths = append(validPaths, projectPath)
 		}
 	}
 

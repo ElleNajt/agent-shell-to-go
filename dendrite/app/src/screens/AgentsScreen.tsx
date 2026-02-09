@@ -190,62 +190,189 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     }
   };
 
+  const renderHeader = () => (
+    <View style={styles.header}>
+      <TouchableOpacity 
+        style={styles.machineSelector}
+        onPress={() => setShowMachines(true)}
+      >
+        <Text style={styles.title}>{currentMachine?.name || 'Agent Graph'}</Text>
+        <Text style={styles.dropdownArrow}>▼</Text>
+      </TouchableOpacity>
+      <View style={styles.headerButtons}>
+        <TouchableOpacity 
+          onPress={handleBigRedButton} 
+          style={styles.bigRedButton}
+        >
+          <View style={styles.bigRedButtonInner}>
+            <Text style={styles.bigRedButtonText}>STOP</Text>
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={handlePruneSessions} style={styles.headerButton}>
+          <Text style={styles.headerButtonText}>🧹</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={refetch} style={styles.headerButton}>
+          <Text style={styles.headerButtonText}>↻</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          onPress={() => {
+            loadProjects();
+            setShowActions(true);
+          }} 
+          style={styles.headerButton}
+        >
+          <Text style={styles.headerButtonText}>+</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderModals = () => (
+    <>
+      {/* Machine Selector Modal */}
+      <Modal
+        visible={showMachines}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMachines(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowMachines(false)}
+        >
+          <View style={styles.actionsMenu}>
+            <Text style={styles.actionsTitle}>Select Machine</Text>
+            
+            <ScrollView style={styles.machinesList}>
+              {machines.map((machine, i) => (
+                <TouchableOpacity 
+                  key={i}
+                  style={[
+                    styles.machineItem,
+                    currentMachine?.url === machine.url && styles.machineItemActive
+                  ]}
+                  onPress={() => switchMachine(machine)}
+                  onLongPress={() => {
+                    Alert.alert(
+                      'Delete Machine',
+                      `Remove "${machine.name}"?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Delete', style: 'destructive', onPress: () => deleteMachine(machine) }
+                      ]
+                    );
+                  }}
+                >
+                  <Text style={styles.machineName}>{machine.name}</Text>
+                  <Text style={styles.machineUrl}>{machine.url}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => {
+                setShowMachines(false);
+                setShowAddMachine(true);
+              }}
+            >
+              <Text style={styles.actionIcon}>+</Text>
+              <Text style={styles.actionText}>Add Machine</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.cancelButton}
+              onPress={() => setShowMachines(false)}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Add Machine Modal */}
+      <Modal
+        visible={showAddMachine}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAddMachine(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.formModal}>
+            <Text style={styles.formTitle}>Add Machine</Text>
+            
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={newMachineName}
+              onChangeText={setNewMachineName}
+              placeholder="e.g., MacBook, Workstation"
+              placeholderTextColor="#666"
+            />
+            
+            <Text style={styles.label}>Backend URL</Text>
+            <TextInput
+              style={styles.input}
+              value={newMachineUrl}
+              onChangeText={setNewMachineUrl}
+              placeholder="e.g., http://100.x.x.x:8080"
+              placeholderTextColor="#666"
+              autoCapitalize="none"
+              keyboardType="url"
+            />
+            
+            <View style={styles.formButtons}>
+              <TouchableOpacity 
+                style={styles.formCancelButton}
+                onPress={() => setShowAddMachine(false)}
+              >
+                <Text style={styles.formCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.formSubmitButton}
+                onPress={addMachine}
+              >
+                <Text style={styles.formSubmitText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+
   if (loading && agents.length === 0) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.loadingText}>Loading agents...</Text>
+      <View style={styles.container}>
+        {renderHeader()}
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={styles.loadingText}>Loading agents...</Text>
+        </View>
+        {renderModals()}
       </View>
     );
   }
 
   if (error) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>Error: {error}</Text>
-        <TouchableOpacity onPress={refetch} style={styles.retryButton}>
-          <Text style={styles.retryText}>Tap to retry</Text>
-        </TouchableOpacity>
+      <View style={styles.container}>
+        {renderHeader()}
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>Error: {error}</Text>
+          <TouchableOpacity onPress={refetch} style={styles.retryButton}>
+            <Text style={styles.retryText}>Tap to retry</Text>
+          </TouchableOpacity>
+        </View>
+        {renderModals()}
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.machineSelector}
-          onPress={() => setShowMachines(true)}
-        >
-          <Text style={styles.title}>{currentMachine?.name || 'Agent Graph'}</Text>
-          <Text style={styles.dropdownArrow}>▼</Text>
-        </TouchableOpacity>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity 
-            onPress={handleBigRedButton} 
-            style={styles.bigRedButton}
-          >
-            <View style={styles.bigRedButtonInner}>
-              <Text style={styles.bigRedButtonText}>STOP</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handlePruneSessions} style={styles.headerButton}>
-            <Text style={styles.headerButtonText}>🧹</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={refetch} style={styles.headerButton}>
-            <Text style={styles.headerButtonText}>↻</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            onPress={() => {
-              loadProjects();
-              setShowActions(true);
-            }} 
-            style={styles.headerButton}
-          >
-            <Text style={styles.headerButtonText}>+</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      {renderHeader()}
       
       <GraphView
         agents={agents}
@@ -420,116 +547,7 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
         </View>
       </Modal>
 
-      {/* Machine Selector Modal */}
-      <Modal
-        visible={showMachines}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowMachines(false)}
-      >
-        <TouchableOpacity 
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowMachines(false)}
-        >
-          <View style={styles.actionsMenu}>
-            <Text style={styles.actionsTitle}>Select Machine</Text>
-            
-            <ScrollView style={styles.machinesList}>
-              {machines.map((machine, i) => (
-                <TouchableOpacity 
-                  key={i}
-                  style={[
-                    styles.machineItem,
-                    currentMachine?.url === machine.url && styles.machineItemActive
-                  ]}
-                  onPress={() => switchMachine(machine)}
-                  onLongPress={() => {
-                    Alert.alert(
-                      'Delete Machine',
-                      `Remove "${machine.name}"?`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Delete', style: 'destructive', onPress: () => deleteMachine(machine) }
-                      ]
-                    );
-                  }}
-                >
-                  <Text style={styles.machineName}>{machine.name}</Text>
-                  <Text style={styles.machineUrl}>{machine.url}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            
-            <TouchableOpacity 
-              style={styles.actionButton}
-              onPress={() => {
-                setShowMachines(false);
-                setShowAddMachine(true);
-              }}
-            >
-              <Text style={styles.actionIcon}>+</Text>
-              <Text style={styles.actionText}>Add Machine</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={styles.cancelButton}
-              onPress={() => setShowMachines(false)}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Add Machine Modal */}
-      <Modal
-        visible={showAddMachine}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowAddMachine(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.formModal}>
-            <Text style={styles.formTitle}>Add Machine</Text>
-            
-            <Text style={styles.label}>Name</Text>
-            <TextInput
-              style={styles.input}
-              value={newMachineName}
-              onChangeText={setNewMachineName}
-              placeholder="e.g., MacBook, Workstation"
-              placeholderTextColor="#666"
-            />
-            
-            <Text style={styles.label}>Backend URL</Text>
-            <TextInput
-              style={styles.input}
-              value={newMachineUrl}
-              onChangeText={setNewMachineUrl}
-              placeholder="e.g., http://100.x.x.x:8080"
-              placeholderTextColor="#666"
-              autoCapitalize="none"
-              keyboardType="url"
-            />
-            
-            <View style={styles.formButtons}>
-              <TouchableOpacity 
-                style={styles.formCancelButton}
-                onPress={() => setShowAddMachine(false)}
-              >
-                <Text style={styles.formCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.formSubmitButton}
-                onPress={addMachine}
-              >
-                <Text style={styles.formSubmitText}>Add</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {renderModals()}
     </View>
   );
 }

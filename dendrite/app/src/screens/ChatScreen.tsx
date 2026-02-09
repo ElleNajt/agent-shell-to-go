@@ -28,14 +28,9 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
   const [showFileExplorer, setShowFileExplorer] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
-  // Scroll to bottom when new messages arrive
-  useEffect(() => {
-    if (messages.length > 0) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    }
-  }, [messages.length]);
+  const scrollToBottom = () => {
+    flatListRef.current?.scrollToEnd({ animated: true });
+  };
 
   const handleSend = () => {
     if (inputText.trim() && !sending) {
@@ -189,9 +184,12 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         />
       </Modal>
 
-      {/* Status bar */}
+      {/* Status bar with jump to bottom */}
       <View style={[styles.statusBar, { backgroundColor: getStatusColor(agent.status) }]}>
         <Text style={styles.statusBarText}>{agent.status}</Text>
+        <TouchableOpacity onPress={scrollToBottom} style={styles.jumpButton}>
+          <Text style={styles.jumpButtonText}>↓ Bottom</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Messages */}
@@ -210,7 +208,6 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
           keyExtractor={(item) => String(item.id)}
           renderItem={renderMessage}
           contentContainerStyle={styles.messagesList}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
         />
       )}
 
@@ -325,14 +322,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   statusBar: {
+    flexDirection: 'row',
     paddingVertical: 4,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
   statusBarText: {
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '600',
     textTransform: 'uppercase',
+  },
+  jumpButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 4,
+  },
+  jumpButtonText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
   },
   centered: {
     flex: 1,

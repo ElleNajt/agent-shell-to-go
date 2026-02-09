@@ -190,10 +190,6 @@ ORIG-FN is the original function, ARGS are its arguments."
 ORIG-FN is the original function, ARGS are its arguments."
   (let* ((state (plist-get args :state))
          (buffer (map-elt state :buffer)))
-    (agent-shell-to-go--debug "on-notification: state=%S buffer=%s active=%s"
-                              state
-                              (and buffer (buffer-name buffer))
-                              (and buffer (memq buffer agent-shell-to-go--active-buffers)))
     (when (and buffer
                (buffer-live-p buffer)
                (memq buffer agent-shell-to-go--active-buffers))
@@ -201,7 +197,6 @@ ORIG-FN is the original function, ARGS are its arguments."
              (params (alist-get 'params notification))
              (update (alist-get 'update params))
              (update-type (alist-get 'sessionUpdate update)))
-        (agent-shell-to-go--debug "on-notification: update-type=%s" update-type)
         (pcase update-type
           ("agent_message_chunk"
            (let ((text (alist-get 'text (alist-get 'content update))))

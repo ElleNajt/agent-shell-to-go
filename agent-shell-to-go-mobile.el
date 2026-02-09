@@ -555,10 +555,10 @@ TODO: Use proper acp/agent-shell resume functionality when available."
     ;; Spawn a new agent with the same buffer name
     (when (and project-path (file-directory-p project-path))
       (let* ((default-directory project-path)
-             ;; Extract agent name from buffer name (remove " @ project" suffix)
-             (agent-name (if (string-match "\\(.+\\) @ " buffer-name)
-                             (match-string 1 buffer-name)
-                           buffer-name))
+             ;; Extract agent name from buffer name (remove " @ project" suffix and " Agent" suffix)
+             ;; Buffer name is like "Box-Sizing Agent @ project" -> we want "Box-Sizing"
+             (agent-name (when (string-match "\\(.+\\) Agent @ " buffer-name)
+                           (match-string 1 buffer-name)))
              ;; Build resume context from previous messages
              (resume-context (when resume-messages
                                (agent-shell-to-go-mobile--format-resume-context resume-messages))))

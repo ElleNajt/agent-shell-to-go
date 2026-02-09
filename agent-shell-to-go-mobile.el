@@ -70,6 +70,10 @@ Alternative to setting `agent-shell-to-go-mobile-token' directly."
 (defvar-local agent-shell-to-go-mobile--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
+(defvar-local agent-shell-to-go-mobile--injecting-from-mobile nil
+  "Non-nil when message is being injected from mobile app.
+Used to prevent echoing the message back to the backend.")
+
 ;;; Utility functions
 
 (defun agent-shell-to-go-mobile--debug (format-string &rest args)
@@ -203,7 +207,10 @@ ORIG-FN is the original function, ARGS are its arguments."
       (let ((prompt (plist-get args :prompt)))
         (when prompt
           (with-current-buffer buffer
-            (agent-shell-to-go-mobile--send-message "user" prompt)
+            ;; Only send user message if it wasn't injected from mobile
+            ;; (mobile already stored it - echoing back causes duplicates)
+            (unless agent-shell-to-go-mobile--injecting-from-mobile
+              (agent-shell-to-go-mobile--send-message "user" prompt))
             (agent-shell-to-go-mobile--send-status "processing")
             (setq agent-shell-to-go-mobile--current-agent-message nil))))))
   (apply orig-fn args))
@@ -516,17 +523,23 @@ Injects the message into the appropriate agent-shell buffer."
 (defun agent-shell-to-go-mobile--inject-message (text)
   "Inject TEXT from mobile app into the current agent-shell buffer."
   (when (derived-mode-p 'agent-shell-mode)
-    (if (shell-maker-busy)
-        ;; Shell is busy - queue the request
-        (progn
-          (agent-shell--enqueue-request :prompt text)
-          (agent-shell-to-go-mobile--debug "Queued message (agent busy): %s" text))
-      ;; Shell is ready - inject immediately
-      (save-excursion
-        (goto-char (point-max))
-        (insert text))
-      (goto-char (point-max))
-      (call-interactively #'shell-maker-submit))))
+    ;; Set flag to prevent echoing this message back to backend
+    ;; (it was already stored when mobile sent it)
+    (setq agent-shell-to-go-mobile--injecting-from-mobile t)
+    (unwind-protect
+        (if (shell-maker-busy)
+            ;; Shell is busy - queue the request
+            (progn
+              (agent-shell--enqueue-request :prompt text)
+              (agent-shell-to-go-mobile--debug "Queued message (agent busy): %s" text))
+          ;; Shell is ready - inject immediately
+          (save-excursion
+            (goto-char (point-max))
+            (insert text))
+          (goto-char (point-max))
+          (call-interactively #'shell-maker-submit))
+      ;; Clear flag after submit (or on error)
+      (setq agent-shell-to-go-mobile--injecting-from-mobile nil))))
 
 (defun agent-shell-to-go-mobile--handle-stop-request (payload)
   "Handle a stop_request PAYLOAD from mobile app.

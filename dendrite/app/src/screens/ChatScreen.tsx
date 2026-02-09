@@ -132,6 +132,26 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         displayContent = item.content.replace(/^\[FAILED\]\s*/, '');
       }
       
+      // Detect file operations and parse them
+      const fileOpMatch = displayContent.match(/^(Read|Write|Edit|mcp__acp__Read|mcp__acp__Write|mcp__acp__Edit):\s*(.+)/);
+      const isFileOp = !!fileOpMatch;
+      const toolName = fileOpMatch?.[1]?.replace('mcp__acp__', '') || '';
+      const filePath = fileOpMatch?.[2]?.split('\n')[0] || '';
+      const fileContent = isFileOp ? displayContent.substring(displayContent.indexOf('\n') + 1) : '';
+      
+      // Get appropriate icon for tool type
+      const getToolIcon = () => {
+        if (isRunning) return '⏳';
+        if (isFailed) return '✗';
+        if (isFileOp) {
+          if (toolName === 'Read') return '📖';
+          if (toolName === 'Write') return '📝';
+          if (toolName === 'Edit') return '✏️';
+        }
+        if (isCompleted) return '✓';
+        return '🔧';
+      };
+      
       // Extract the command/title (first line or bracket content)
       const firstLine = displayContent.split('\n')[0];
       const preview = firstLine.length > 60 ? firstLine.slice(0, 57) + '...' : firstLine;
@@ -143,20 +163,34 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
           onLongPress={() => copyToClipboard(displayContent)}
         >
           <View style={styles.toolHeader}>
-            <Text style={styles.toolIcon}>
-              {isRunning ? '⏳' : isCompleted ? '✓' : isFailed ? '✗' : '🔧'}
-            </Text>
-            <Text style={[
-              styles.toolPreview,
-              isCompleted && styles.toolCompleted,
-              isFailed && styles.toolFailed,
-            ]} numberOfLines={isExpanded ? undefined : 1}>
-              {isExpanded ? displayContent : preview}
-            </Text>
+            <Text style={styles.toolIcon}>{getToolIcon()}</Text>
+            {isFileOp && !isExpanded ? (
+              <View style={styles.fileOpHeader}>
+                <Text style={[styles.toolPreview, isCompleted && styles.toolCompleted, isFailed && styles.toolFailed]}>
+                  {toolName}
+                </Text>
+                <Text style={styles.filePath} numberOfLines={1}>{filePath.replace(/^\/Users\/[^/]+/, '~')}</Text>
+              </View>
+            ) : (
+              <Text style={[
+                styles.toolPreview,
+                isCompleted && styles.toolCompleted,
+                isFailed && styles.toolFailed,
+              ]} numberOfLines={isExpanded ? undefined : 1}>
+                {isExpanded ? displayContent : preview}
+              </Text>
+            )}
             <Text style={styles.expandIcon}>{isExpanded ? '▼' : '▶'}</Text>
           </View>
-          {!isExpanded && displayContent.includes('\n') && (
-            <Text style={styles.moreIndicator}>tap to expand</Text>
+          {isExpanded && isFileOp && fileContent && (
+            <View style={styles.fileContentContainer}>
+              <Text style={styles.fileContentText}>{fileContent}</Text>
+            </View>
+          )}
+          {!isExpanded && (displayContent.includes('\n') || (isFileOp && isCompleted)) && (
+            <Text style={styles.moreIndicator}>
+              {isFileOp && isCompleted ? 'tap to view content' : 'tap to expand'}
+            </Text>
           )}
         </Pressable>
       );
@@ -574,6 +608,28 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 4,
     fontStyle: 'italic',
+  },
+  fileOpHeader: {
+    flex: 1,
+  },
+  filePath: {
+    color: '#888888',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginTop: 2,
+  },
+  fileContentContainer: {
+    marginTop: 8,
+    padding: 8,
+    backgroundColor: '#0d0d1a',
+    borderRadius: 6,
+    maxHeight: 300,
+  },
+  fileContentText: {
+    color: '#e0e0e0',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 16,
   },
   roleLabel: {
     color: '#AAAAAA',

@@ -29,6 +29,9 @@ export function useMessages(sessionId: string | null) {
 
     const unsubscribe = api.subscribe((event: WSEvent) => {
       if (event.type === 'message' && event.payload.session_id === sessionId) {
+        // Skip user messages - we already add them optimistically when sending
+        if (event.payload.role === 'user') return;
+        
         setMessages(prev => [...prev, {
           id: Date.now(),
           session_id: event.payload.session_id,

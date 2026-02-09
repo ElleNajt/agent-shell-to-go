@@ -45,10 +45,22 @@ export function useMessages(sessionId: string | null) {
   const sendMessage = useCallback(async (content: string) => {
     if (!sessionId || !content.trim()) return;
 
+    // Optimistically add the message immediately
+    const optimisticMessage: Message = {
+      id: Date.now(),
+      session_id: sessionId,
+      role: 'user',
+      content: content.trim(),
+      timestamp: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, optimisticMessage]);
+
     setSending(true);
     try {
       await api.sendMessage(sessionId, content);
     } catch (e) {
+      // Remove optimistic message on failure
+      setMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
       setError(e instanceof Error ? e.message : 'Failed to send message');
     } finally {
       setSending(false);

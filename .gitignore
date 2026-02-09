@@ -2,18 +2,18 @@
 *.elc
 
 # Build artifacts
-frontend/backend/agent-shell-backend
-frontend/backend/mobile-backend
+agent-shell-mobile/backend/agent-shell-backend
+agent-shell-mobile/backend/mobile-backend
 
 # Database
 *.db
 
 # Config with secrets/IPs
-frontend/mobile/config.json
+agent-shell-mobile/mobile/config.json
 
 # Node
 node_modules/
 
 # Expo
 .expo/
-frontend/mobile/.expo/
+agent-shell-mobile/mobile/.expo/

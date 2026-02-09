@@ -14,17 +14,17 @@ fi
 echo "Using Tailscale IP: $TAILSCALE_IP"
 
 # Update mobile config
-cat >"$SCRIPT_DIR/frontend/mobile/config.json" <<EOF
+cat >"$SCRIPT_DIR/agent-shell-mobile/mobile/config.json" <<EOF
 {
   "backendUrl": "http://$TAILSCALE_IP:8080",
   "token": "NOAUTH"
 }
 EOF
-echo "Updated frontend/mobile/config.json"
+echo "Updated agent-shell-mobile/mobile/config.json"
 
 # Start backend
 echo "Starting backend on $TAILSCALE_IP:8080..."
-cd "$SCRIPT_DIR/frontend/backend"
+cd "$SCRIPT_DIR/agent-shell-mobile/backend"
 nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c go build -o agent-shell-backend main.go
 AGENT_SHELL_API_TOKEN=NOAUTH nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c ./agent-shell-backend --listen "$TAILSCALE_IP:8080" &
 BACKEND_PID=$!
@@ -40,7 +40,7 @@ fi
 
 # Start mobile app
 echo "Starting Expo..."
-cd "$SCRIPT_DIR/frontend/mobile"
+cd "$SCRIPT_DIR/agent-shell-mobile/mobile"
 npx expo start
 
 # Cleanup on exit

@@ -296,7 +296,7 @@ ORIG-FN is the original function, ARGS are its arguments."
 
 ;;; Minor mode
 
-(defun agent-shell-to-go-mobile--enable ()
+(cl-defun agent-shell-to-go-mobile--enable ()
   "Enable mobile backend integration for this buffer."
   (unless agent-shell-to-go-mobile-backend-url
     (agent-shell-to-go-mobile--debug "backend URL not set, skipping")

@@ -234,11 +234,28 @@ ORIG-FN is the original function, ARGS are its arguments."
                (agent-shell-to-go-mobile--send-message
                 "agent" agent-shell-to-go-mobile--current-agent-message)
                (setq agent-shell-to-go-mobile--current-agent-message nil)))
-           ;; Send tool call as tool message
+           ;; Send tool call as tool message with useful context
            (let* ((title (alist-get 'title update))
                   (raw-input (alist-get 'rawInput update))
                   (command (alist-get 'command raw-input))
-                  (display (or command title "Tool call")))
+                  (file-path (alist-get 'file_path raw-input))
+                  (pattern (alist-get 'pattern raw-input))
+                  (content (alist-get 'content raw-input))
+                  ;; Build a display string with relevant info
+                  (display (cond
+                            ;; Bash/terminal commands - show the command
+                            (command command)
+                            ;; File operations - show tool name + path
+                            (file-path (format "%s: %s" (or title "File") file-path))
+                            ;; Search operations - show pattern
+                            (pattern (format "%s: %s" (or title "Search") pattern))
+                            ;; Write with content - show truncated preview
+                            ((and content (> (length content) 0))
+                             (format "%s: %s..." (or title "Write")
+                                     (truncate-string-to-width content 50)))
+                            ;; Fallback to title or generic
+                            (title title)
+                            (t "Tool call"))))
              (with-current-buffer buffer
                (agent-shell-to-go-mobile--send-message
                 "tool" (format "[RUNNING] %s" display)))))

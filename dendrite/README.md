@@ -88,50 +88,61 @@ If you run agents on a machine you don't fully trust (e.g., a cloud GPU box), a 
 
 #### Setting up ACLs
 
-1. Go to https://login.tailscale.com/admin/acls
-2. Find your tailnet domain by running: `tailscale status --json | grep DNSName`
-   - It looks like `*.your-tailnet.ts.net`
-3. Replace the default "allow all" ACL with something like:
+Tailscale ACLs use tags to identify machines. You need to:
+1. Define tags and their owners
+2. Write ACL rules using those tags
+3. Apply tags to your machines in the admin console
+
+**Step 1:** Go to https://login.tailscale.com/admin/acls and replace the default ACL:
 
 ```json
 {
+  "tagOwners": {
+    "tag:untrusted": ["autogroup:admin"],
+    "tag:trusted": ["autogroup:admin"]
+  },
+  
   "acls": [
-    // Untrusted machine can only reach itself
+    // Untrusted machines can only reach themselves
     {
       "action": "accept",
-      "src": ["untrusted-box.your-tailnet.ts.net"],
-      "dst": ["untrusted-box.your-tailnet.ts.net:*"]
+      "src": ["tag:untrusted"],
+      "dst": ["tag:untrusted:*"]
     },
     
     // Trusted machines can reach everything
     {
       "action": "accept",
-      "src": ["macbook.your-tailnet.ts.net", "phone.your-tailnet.ts.net"],
+      "src": ["tag:trusted"],
       "dst": ["*:*"]
     }
   ],
   
   "tests": [
-    // Untrusted can reach itself
+    // Untrusted can reach other untrusted machines
     {
-      "src": "untrusted-box.your-tailnet.ts.net",
-      "accept": ["untrusted-box.your-tailnet.ts.net:8080"]
+      "src": "tag:untrusted",
+      "accept": ["tag:untrusted:22", "tag:untrusted:8080"]
     },
-    // Untrusted cannot reach other machines
+    // Untrusted cannot reach trusted machines
     {
-      "src": "untrusted-box.your-tailnet.ts.net",
-      "deny": ["macbook.your-tailnet.ts.net:8080"]
+      "src": "tag:untrusted",
+      "deny": ["tag:trusted:8080", "tag:trusted:22"]
     },
-    // Trusted can reach untrusted (for SSH, monitoring, etc.)
+    // Trusted can reach everything
     {
-      "src": "macbook.your-tailnet.ts.net",
-      "accept": ["untrusted-box.your-tailnet.ts.net:8080", "untrusted-box.your-tailnet.ts.net:22"]
+      "src": "tag:trusted",
+      "accept": ["tag:untrusted:8080", "tag:untrusted:22"]
     }
   ]
 }
 ```
 
+**Step 2:** Apply tags to your machines at https://login.tailscale.com/admin/machines:
+- Tag your cloud GPU boxes with `tag:untrusted`
+- Tag your MacBook, phone, and other trusted devices with `tag:trusted`
+
 This ensures:
-- Untrusted machine → itself: ✅
-- Untrusted machine → other backends: ❌ (prompt injection can't pivot)
-- Trusted machines → untrusted: ✅ (you can still SSH in and use the mobile app)
+- Untrusted machine → itself/other untrusted: ✅
+- Untrusted machine → trusted backends: ❌ (prompt injection can't pivot)
+- Trusted machines → everything: ✅ (you can still SSH in and use the mobile app)

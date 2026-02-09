@@ -1,4 +1,4 @@
-# Agent Shell Mobile App - Plan
+# Dendrite - Agent Visualization App
 
 ## Vision
 
@@ -150,23 +150,23 @@ Client filters by session_id for the agent they're viewing.
 
 ```bash
 # Build
-cd frontend/backend
-nix-shell -p go --run "go build -o agent-shell-backend ."
+cd dendrite/backend
+nix-shell -p go --run "go build -o dendrite-backend ."
 
 # Create token
-echo "your-secret-token" > ~/.agent-shell-mobile-token
+echo "your-secret-token" > ~/.dendrite-token
 
 # Run (use your Tailscale IP)
-./agent-shell-backend \
+./dendrite-backend \
   --listen 100.x.x.x:8080 \
-  --token-file ~/.agent-shell-mobile-token \
-  --db ~/.agent-shell/mobile.db
+  --token-file ~/.dendrite-token \
+  --db ~/.agent-shell/dendrite.db
 ```
 
 ## Running the Mobile App
 
 ```bash
-cd frontend/mobile
+cd dendrite/app
 npm install  # if needed
 npx expo start
 # Then press 'a' for Android or scan QR with Expo Go
@@ -175,11 +175,11 @@ npx expo start
 ## File Structure
 
 ```
-frontend/
+dendrite/
   backend/
     main.go          # Complete Go server
     go.mod
-  mobile/
+  app/
     App.tsx          # Main app with navigation
     app.json         # Expo config
     package.json

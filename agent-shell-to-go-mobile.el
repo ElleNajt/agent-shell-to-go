@@ -128,7 +128,7 @@ DATA is an alist that will be JSON-encoded."
       (if agent-shell-to-go-mobile-async
           ;; Async: fire and forget with curl
           (let ((proc (start-process
-                       "agent-shell-mobile-post"
+                       "dendrite-post"
                        nil  ; no buffer
                        "curl" "-s" "-X" "POST"
                        "-H" (format "Authorization: Bearer %s" token)

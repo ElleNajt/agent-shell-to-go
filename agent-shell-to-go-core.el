@@ -44,10 +44,18 @@ Each transport is a plist with :name and handler functions.")
 (defvar-local agent-shell-to-go--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
+(defcustom agent-shell-to-go-debug-file "/tmp/agent-shell-to-go.log"
+  "File to write debug logs to."
+  :type 'string
+  :group 'agent-shell-to-go)
+
 (defun agent-shell-to-go--debug (format-string &rest args)
   "Log a debug message if `agent-shell-to-go-debug' is non-nil."
   (when agent-shell-to-go-debug
-    (apply #'message (concat "agent-shell-to-go: " format-string) args)))
+    (let ((msg (concat (format-time-string "%H:%M:%S ")
+                       (apply #'format format-string args)
+                       "\n")))
+      (append-to-file msg nil agent-shell-to-go-debug-file))))
 
 (defun agent-shell-to-go-register-transport (transport)
   "Register TRANSPORT for use.
@@ -181,7 +189,11 @@ ORIG-FN is the original function, ARGS are its arguments."
   "Advice for agent-shell--on-notification. Dispatch message events.
 ORIG-FN is the original function, ARGS are its arguments."
   (let* ((state (plist-get args :state))
-         (buffer (alist-get :buffer state)))
+         (buffer (map-elt state :buffer)))
+    (agent-shell-to-go--debug "on-notification: state=%S buffer=%s active=%s"
+                              state
+                              (and buffer (buffer-name buffer))
+                              (and buffer (memq buffer agent-shell-to-go--active-buffers)))
     (when (and buffer
                (buffer-live-p buffer)
                (memq buffer agent-shell-to-go--active-buffers))
@@ -189,6 +201,7 @@ ORIG-FN is the original function, ARGS are its arguments."
              (params (alist-get 'params notification))
              (update (alist-get 'update params))
              (update-type (alist-get 'sessionUpdate update)))
+        (agent-shell-to-go--debug "on-notification: update-type=%s" update-type)
         (pcase update-type
           ("agent_message_chunk"
            (let ((text (alist-get 'text (alist-get 'content update))))
@@ -215,7 +228,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (let* ((state (plist-get args :state))
          (request (plist-get args :request))
          (method (alist-get 'method request))
-         (buffer (and state (alist-get :buffer state))))
+         (buffer (and state (map-elt state :buffer))))
     (when (and buffer
                (buffer-live-p buffer)
                (memq buffer agent-shell-to-go--active-buffers)

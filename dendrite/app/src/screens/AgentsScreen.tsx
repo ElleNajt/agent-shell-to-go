@@ -86,6 +86,7 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     api.configure(machine.url);
     api.disconnectWebSocket();
     api.connectWebSocket();
+    await AsyncStorage.setItem('agent_shell_current_machine_url', machine.url);
     setShowMachines(false);
     refetch();
   };

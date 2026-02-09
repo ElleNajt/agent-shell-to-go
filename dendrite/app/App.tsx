@@ -13,7 +13,11 @@ import { ChatScreen } from './src/screens/ChatScreen';
 type Screen = 'settings' | 'agents' | 'chat';
 
 // Try to load config from config.json at build time
-let buildTimeConfig: { backendUrl?: string } = {};
+interface Machine {
+  name: string;
+  url: string;
+}
+let buildTimeConfig: { machines?: Machine[]; backendUrl?: string } = {};
 try {
   buildTimeConfig = require('./config.json');
 } catch (e) {
@@ -31,7 +35,23 @@ export default function App() {
 
   const checkExistingConfig = async () => {
     try {
-      // First check build-time config
+      // First check build-time config for machines
+      if (buildTimeConfig.machines && buildTimeConfig.machines.length > 0) {
+        // Save machines to AsyncStorage so AgentsScreen can use them
+        await AsyncStorage.setItem('agent_shell_machines', JSON.stringify(buildTimeConfig.machines));
+        // Use first machine as default, or saved selection
+        const savedUrl = await AsyncStorage.getItem('agent_shell_current_machine_url');
+        const machine = savedUrl 
+          ? buildTimeConfig.machines.find(m => m.url === savedUrl) || buildTimeConfig.machines[0]
+          : buildTimeConfig.machines[0];
+        api.configure(machine.url);
+        api.connectWebSocket();
+        setScreen('agents');
+        setLoading(false);
+        return;
+      }
+      
+      // Legacy: single backendUrl
       if (buildTimeConfig.backendUrl) {
         api.configure(buildTimeConfig.backendUrl);
         api.connectWebSocket();

@@ -14,37 +14,45 @@ Mobile App (React Native)
 
 Each machine runs its own backend. The mobile app can switch between machines.
 
-## Quick Start (Single Machine)
+## Setup
 
-```bash
-cd dendrite
-./start.sh
+### 1. Emacs Configuration
+
+Add to your Doom Emacs config (inside the `use-package! agent-shell-to-go` block):
+
+```elisp
+(require 'agent-shell-to-go-mobile)
+(setq agent-shell-to-go-mobile-backend-url
+      (format "http://%s:8080"
+              (string-trim (shell-command-to-string "tailscale ip -4"))))
+(agent-shell-to-go-mobile-setup)
 ```
 
-This starts the backend and Expo dev server. Scan the QR code with Expo Go.
+This auto-detects the machine's Tailscale IP at startup and configures Emacs to push agent events to the backend.
 
-## Multi-Machine Setup
+### 2. Start the Backend
 
-### On each machine you want to monitor:
-
-1. **Start the backend:**
 ```bash
 cd dendrite/backend
 ./start-backend.sh
 ```
 
 This will:
+- Build the Go binary if needed (or pass `--build` to force rebuild)
 - Auto-detect your Tailscale IP
-- Create a token file at `~/.agent-shell-api-token` if needed
-- Configure Emacs automatically via emacsclient
+- Attempt to configure Emacs via emacsclient (optional — the Emacs config above handles this persistently)
+- Start the backend on `<tailscale-ip>:8080`
 
-### In the mobile app:
+### 3. Mobile App
 
-1. Tap the machine name in the header (top left)
-2. Tap "Add Machine"
-3. Enter a name and the backend URL (e.g., `http://100.x.x.x:8080`)
+In the app, add a machine with the backend URL (e.g., `http://100.x.x.x:8080`). You can switch between machines by tapping the machine name in the header.
 
-You can switch between machines by tapping the machine name.
+For development:
+```bash
+cd app
+npm install
+npx expo start
+```
 
 ## Components
 
@@ -64,24 +72,8 @@ React Native app that:
 - Allows sending messages to agents
 - Can stop/close agents remotely
 
-## Development
-
-### Backend
-```bash
-cd backend
-go build -o dendrite-backend .
-./dendrite-backend --listen 127.0.0.1:8080 --allow-localhost
-```
-
-### Mobile App
-```bash
-cd app
-npm install
-npx expo start
-```
-
 ## Security
 
-- Backend only listens on Tailscale IPs (100.x.x.x) by default
-- All requests require Bearer token authentication
-- Token is stored in `~/.agent-shell-api-token`
+- Backend only listens on Tailscale IPs (100.x.x.x)
+- Tailscale is the auth layer — no application-level tokens
+- Only devices on your tailnet can reach the backend

@@ -1,0 +1,79 @@
+* High Priority (Bugs/Broken)
+
+** DONE Fix markdown text box rendering bug
+CLOSED: [2025-02-09]
+Text box sometimes becomes thin and stretches down past its container.
+Fixed: Added markdownContainer wrapper with flex constraints in ChatScreen.tsx (commit 29cc576)
+
+** DONE Fix tool messages showing just tool name without args
+CLOSED: [2025-02-09]
+Sometimes we get a useless message like "Write" or "Terminal" with no args.
+Fixed: Extract file_path, pattern, content from rawInput in agent-shell-to-go-mobile.el (commit fd89b7c)
+
+** DONE Add delivery checkmarks to sent messages
+CLOSED: [2025-02-09]
+Messages sometimes get lost. Show ack checkmarks like modern chat apps (sent, delivered, read).
+Fixed: Added status field and checkmark UI in ChatScreen.tsx/useMessages.ts (commit aae6afd)
+
+** DONE WebSocket disconnect issue
+CLOSED: [2025-02-09]
+WebSocket was disconnecting every ~5 seconds.
+Root cause: Missing ping/pong keepalive mechanism.
+Fix: Added proper ping/pong (54s ping, 60s pong timeout) in main.go (commit 4e21fed)
+
+** DONE Duplicate user messages from mobile
+CLOSED: [2025-02-09]
+Messages sent from mobile appeared twice in DB.
+Root cause: Backend stored message, then Emacs echoed it back via /events/message.
+Fix: Added --injecting-from-mobile flag in elisp to skip echo (commit dc3060b)
+
+* Medium Priority (Usability)
+
+** DONE Add stop button for individual agents (interrupt without closing)
+CLOSED: [2025-02-09]
+
+** DONE Add "recent conversations" list view (sorted by last activity)
+CLOSED: [2025-02-09]
+
+** DONE Long-press on message boxes to copy text
+CLOSED: [2025-02-09]
+Added expo-clipboard, long-press on any message copies to clipboard (commit ee621ab)
+
+** TODO Preserve scroll position when switching channels
+If user was scrolled to bottom, stay at bottom when clicking on a different agent.
+
+** DONE Show file contents and diffs for Read/Write/Edit tools
+CLOSED: [2025-02-09]
+Display file path and content inline with tool-specific icons (commit 49b2d1c)
+
+** DONE Show hidden files in file browser
+CLOSED: [2025-02-09]
+Added toggle switch in path bar, backend supports show_hidden param (commit 2ebf3d3)
+
+* Low Priority (Polish)
+
+** TODO Rename meta-agent display name to "Conductor"
+The agent in .claude-meta should display as "Conductor" instead of 
+"Claude Code Agent" in the graph view and elsewhere.
+
+** DONE Color agent boxes for unread messages
+CLOSED: [2025-02-09]
+Purple border/background and badge on agents with unread messages (commit b2862ee)
+
+** DONE Remove [RUNNING] / [COMPLETED] tags from tool messages
+CLOSED: [2025-02-09]
+Status now shown via icon only (⏳/✓/✗), tags stripped from display (commit ee621ab)
+
+** TODO Better UI for message queuing
+Improve frontend display of queued messages and ensure queuing works reliably.
+
+** TODO New edits in Emacs not resolving from pending to done
+When edits are made in Emacs, the UI shows them as pending but doesn't update to done.
+
+* Connection (Deferred)
+
+** TODO Add connection status indicator in app header (connected/disconnected/reconnecting)
+
+** TODO Replace WebSocket error popups with visual indicator
+
+** TODO Queue messages sent while offline

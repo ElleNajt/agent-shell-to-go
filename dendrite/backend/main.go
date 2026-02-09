@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -991,35 +992,36 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+func getTailscaleIP() (string, error) {
+	cmd := exec.Command("tailscale", "ip", "-4")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get Tailscale IP: %v", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 func main() {
-	listenAddr := flag.String("listen", "", "Address to listen on (e.g., 100.x.x.x:8080)")
+	listenAddr := flag.String("listen", "", "Address to listen on (default: auto-detect Tailscale IP)")
+	port := flag.String("port", "8080", "Port to listen on")
 	dbPath := flag.String("db", "agents.db", "Path to SQLite database")
-	allowLocalhost := flag.Bool("allow-localhost", false, "Allow binding to localhost (for testing)")
 	flag.Parse()
 
-	// Require explicit listen address (should be Tailscale IP)
-	if *listenAddr == "" {
-		log.Fatal("--listen is required (use your Tailscale IP, e.g., 100.x.x.x:8080)")
-	}
-
-	// Validate it looks like a Tailscale IP or localhost
-	host, _, err := net.SplitHostPort(*listenAddr)
-	if err != nil {
-		log.Fatalf("invalid listen address: %v", err)
-	}
-	isLocalhost := host == "127.0.0.1" || host == "localhost"
-	isTailscale := strings.HasPrefix(host, "100.")
-
-	if !isTailscale && !isLocalhost {
-		log.Printf("WARNING: listen address %s doesn't look like a Tailscale IP (100.x.x.x)", host)
-		log.Printf("This server should only be exposed on your Tailscale network!")
-	}
-	if isLocalhost && !*allowLocalhost {
-		log.Fatal("localhost binding requires --allow-localhost flag (for testing only)")
+	var addr string
+	if *listenAddr != "" {
+		addr = *listenAddr
+	} else {
+		// Auto-detect Tailscale IP
+		ip, err := getTailscaleIP()
+		if err != nil {
+			log.Fatalf("Could not detect Tailscale IP: %v\nMake sure 'tailscale' is in your PATH, or use --listen to specify address manually", err)
+		}
+		addr = ip + ":" + *port
+		log.Printf("Auto-detected Tailscale IP: %s", ip)
 	}
 
 	config := Config{
-		ListenAddr: *listenAddr,
+		ListenAddr: addr,
 		DBPath:     *dbPath,
 	}
 

@@ -218,8 +218,8 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
     }
     
     // Step 2: Calculate radius for each ring based on node count
-    // Ensure minimum spacing of 200px between nodes on each ring
-    const minSpacing = 200;
+    // Ensure minimum spacing of 280px between nodes on each ring
+    const minSpacing = 280;
     const ringRadii: number[] = [];
     let baseRadius = 0; // Ring 0 starts at center if single root
     
@@ -227,13 +227,13 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       if (depth === 0 && nodesAtDepth.length === 1) {
         // Single root at center
         ringRadii[depth] = 0;
-        baseRadius = 160; // Next ring starts here
+        baseRadius = 200; // Next ring starts here
       } else {
         // Calculate radius needed for this many nodes with minSpacing
         const circumference = nodesAtDepth.length * minSpacing;
         const neededRadius = circumference / (2 * Math.PI);
-        // Ensure rings don't shrink and maintain minimum gap
-        const minRadius = baseRadius + (depth === 0 ? 0 : 120);
+        // Ensure rings don't shrink and maintain minimum gap between rings
+        const minRadius = baseRadius + (depth === 0 ? 0 : 160);
         ringRadii[depth] = Math.max(neededRadius, minRadius);
         baseRadius = ringRadii[depth];
       }
@@ -316,9 +316,10 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
           
           if (dispatcherAngle !== undefined) {
             // Position near dispatcher, spreading agents around it
-            const spread = (projectAgents.length - 1) * 0.15; // ~0.15 radians between agents
+            // Use ~0.3 radians (~17 degrees) between agents for adequate spacing
+            const angleStep = 0.3;
             const offset = i - (projectAgents.length - 1) / 2;
-            angle = dispatcherAngle + offset * 0.15;
+            angle = dispatcherAngle + offset * angleStep;
           } else {
             // No dispatcher for this project - distribute evenly in remaining space
             angle = (2 * Math.PI * agentIndex) / totalAgents - Math.PI / 2;

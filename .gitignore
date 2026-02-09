@@ -3,6 +3,7 @@
 
 # Build artifacts
 frontend/backend/agent-shell-backend
+frontend/backend/mobile-backend
 
 # Database
 *.db

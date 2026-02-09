@@ -11,7 +11,9 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Pressable,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
 import { useMessages } from '../hooks/useMessages';
 import { Agent, Message, api } from '../api/client';
@@ -104,6 +106,11 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     });
   };
 
+  const copyToClipboard = async (text: string) => {
+    await Clipboard.setStringAsync(text);
+    Alert.alert('Copied', 'Message copied to clipboard');
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isUser = item.role === 'user';
     const isTool = item.role === 'tool';
@@ -115,15 +122,25 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
       const isCompleted = item.content.startsWith('[COMPLETED]');
       const isFailed = item.content.startsWith('[FAILED]');
       
+      // Strip the status prefix for display
+      let displayContent = item.content;
+      if (isRunning) {
+        displayContent = item.content.replace(/^\[RUNNING\]\s*/, '');
+      } else if (isCompleted) {
+        displayContent = item.content.replace(/^\[COMPLETED\]\s*/, '');
+      } else if (isFailed) {
+        displayContent = item.content.replace(/^\[FAILED\]\s*/, '');
+      }
+      
       // Extract the command/title (first line or bracket content)
-      const firstLine = item.content.split('\n')[0];
+      const firstLine = displayContent.split('\n')[0];
       const preview = firstLine.length > 60 ? firstLine.slice(0, 57) + '...' : firstLine;
       
       return (
-        <TouchableOpacity 
+        <Pressable 
           style={[styles.messageContainer, styles.toolMessage]}
           onPress={() => toggleToolExpanded(item.id)}
-          activeOpacity={0.7}
+          onLongPress={() => copyToClipboard(displayContent)}
         >
           <View style={styles.toolHeader}>
             <Text style={styles.toolIcon}>
@@ -134,22 +151,25 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
               isCompleted && styles.toolCompleted,
               isFailed && styles.toolFailed,
             ]} numberOfLines={isExpanded ? undefined : 1}>
-              {isExpanded ? item.content : preview}
+              {isExpanded ? displayContent : preview}
             </Text>
             <Text style={styles.expandIcon}>{isExpanded ? '▼' : '▶'}</Text>
           </View>
-          {!isExpanded && item.content.includes('\n') && (
+          {!isExpanded && displayContent.includes('\n') && (
             <Text style={styles.moreIndicator}>tap to expand</Text>
           )}
-        </TouchableOpacity>
+        </Pressable>
       );
     }
 
     return (
-      <View style={[
-        styles.messageContainer,
-        isUser ? styles.userMessage : styles.agentMessage,
-      ]}>
+      <Pressable
+        style={[
+          styles.messageContainer,
+          isUser ? styles.userMessage : styles.agentMessage,
+        ]}
+        onLongPress={() => copyToClipboard(item.content)}
+      >
         <Text style={styles.roleLabel}>
           {isUser ? 'You' : 'Agent'}
         </Text>
@@ -170,7 +190,7 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             </Text>
           )}
         </View>
-      </View>
+      </Pressable>
     );
   };
 

@@ -293,8 +293,10 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
         {nodes.map(node => {
           const isSelected = selectedAgent?.session_id === node.agent.session_id;
           const statusColor = STATUS_COLORS[node.agent.status] || STATUS_COLORS.ready;
+          const isDispatcher = node.agent.buffer_name.toLowerCase().includes('dispatcher');
           const name = node.agent.buffer_name.split(' @ ')[0] || node.agent.buffer_name;
           const shortName = name.length > 15 ? name.slice(0, 12) + '...' : name;
+          const projectName = node.agent.project.split('/').pop() || node.agent.project;
 
           return (
             <TouchableOpacity
@@ -310,11 +312,19 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
               ]}
               onPress={() => onSelectAgent(node.agent)}
             >
-              <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-              <Text style={styles.nodeName} numberOfLines={1}>{shortName}</Text>
-              <Text style={styles.nodeProject} numberOfLines={1}>
-                {node.agent.project.split('/').pop()}
-              </Text>
+              {isDispatcher ? (
+                <>
+                  <Text style={styles.dispatcherHat}>🎩</Text>
+                  <Text style={styles.dispatcherProject} numberOfLines={1}>{projectName}</Text>
+                  <View style={[styles.statusDot, { backgroundColor: statusColor, marginTop: 4 }]} />
+                </>
+              ) : (
+                <>
+                  <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+                  <Text style={styles.nodeName} numberOfLines={1}>{shortName}</Text>
+                  <Text style={styles.nodeProject} numberOfLines={1}>{projectName}</Text>
+                </>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -372,6 +382,16 @@ const styles = StyleSheet.create({
     color: '#888888',
     fontSize: 9,
     marginTop: 2,
+  },
+  dispatcherHat: {
+    fontSize: 18,
+    marginBottom: 2,
+  },
+  dispatcherProject: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   empty: {
     ...StyleSheet.absoluteFillObject,

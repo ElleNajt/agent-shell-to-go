@@ -8,6 +8,8 @@ Pairs well with [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell)
 
 The primary interface is **Dendrite**, a React Native mobile app with a Go backend.
 
+![Dendrite mobile app](denrite_image.png)
+
 ```
 Mobile App (React Native)
     │

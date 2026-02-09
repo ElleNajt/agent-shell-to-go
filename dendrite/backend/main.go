@@ -825,21 +825,30 @@ func (s *Server) handlePruneSessions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "checking"})
 }
 
+// SessionInfo represents a session reported during sync
+type SessionInfo struct {
+	SessionID   string `json:"session_id"`
+	BufferName  string `json:"buffer_name"`
+	Project     string `json:"project"`
+	ProjectPath string `json:"project_path"`
+	Timestamp   string `json:"timestamp"`
+}
+
 func (s *Server) handleAliveSessions(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionIDs []string `json:"session_ids"`
+		Sessions []SessionInfo `json:"sessions"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Received alive sessions from Emacs: %d sessions", len(req.SessionIDs))
+	log.Printf("Sync: received %d sessions from Emacs", len(req.Sessions))
 
 	// Build a set of alive session IDs for fast lookup
 	aliveSet := make(map[string]bool)
-	for _, id := range req.SessionIDs {
-		aliveSet[id] = true
+	for _, s := range req.Sessions {
+		aliveSet[s.SessionID] = true
 	}
 
 	// Get all unclosed sessions from the database
@@ -883,10 +892,47 @@ func (s *Server) handleAliveSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Upsert all sessions - this ensures any that are missing get added
+	var addedSessions []string
+	for _, session := range req.Sessions {
+		// Check if session exists before upserting
+		var exists int
+		s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE session_id = ?`, session.SessionID).Scan(&exists)
+		isNew := exists == 0
+
+		_, err := s.db.Exec(`
+			INSERT INTO agents (session_id, buffer_name, project, project_path, status, created_at)
+			VALUES (?, ?, ?, ?, 'ready', ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				closed_at = NULL,
+				status = CASE WHEN status = 'closed' THEN 'ready' ELSE status END
+		`, session.SessionID, session.BufferName, session.Project, session.ProjectPath, session.Timestamp)
+
+		if err != nil {
+			log.Printf("Error upserting session %s: %v", session.SessionID, err)
+		} else if isNew {
+			log.Printf("Added new session: %s (%s)", session.SessionID, session.BufferName)
+			addedSessions = append(addedSessions, session.SessionID)
+			// Broadcast spawn event so UI updates
+			s.broadcast(WSEvent{
+				Type: "agent_spawn",
+				Payload: AgentSpawnEvent{
+					SessionID:   session.SessionID,
+					BufferName:  session.BufferName,
+					Project:     session.Project,
+					ProjectPath: session.ProjectPath,
+					Timestamp:   session.Timestamp,
+				},
+			})
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"pruned_count": len(deadSessions),
 		"pruned":       deadSessions,
+		"added_count":  len(addedSessions),
+		"added":        addedSessions,
 	})
 }
 

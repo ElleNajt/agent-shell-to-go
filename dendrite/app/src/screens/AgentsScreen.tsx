@@ -9,10 +9,12 @@ import {
   TextInput,
   Alert,
   ScrollView,
+  FlatList,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAgents } from '../hooks/useAgents';
 import { GraphView } from '../components/GraphView';
+import { AgentNode } from '../components/AgentNode';
 import { Agent, api } from '../api/client';
 
 interface Machine {
@@ -27,6 +29,7 @@ interface AgentsScreenProps {
 
 export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps) {
   const { agents, loading, error, refetch } = useAgents();
+  const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph');
   const [showActions, setShowActions] = useState(false);
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [showNewDispatcher, setShowNewDispatcher] = useState(false);
@@ -41,6 +44,11 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
   const [currentMachine, setCurrentMachine] = useState<Machine | null>(null);
   const [newMachineName, setNewMachineName] = useState('');
   const [newMachineUrl, setNewMachineUrl] = useState('');
+
+  // Sort agents by last activity for list view
+  const sortedAgents = [...agents].sort((a, b) => 
+    new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+  );
 
   useEffect(() => {
     // Small delay to ensure api is configured
@@ -139,13 +147,13 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     );
   };
 
-  const handlePruneSessions = async () => {
+  const handleSync = async () => {
     try {
-      await api.pruneSessions();
-      // The backend will broadcast close events for pruned sessions,
+      await api.syncSessions();
+      // The backend will broadcast events for pruned/added sessions,
       // which will update the UI via WebSocket
     } catch (e) {
-      Alert.alert('Error', 'Failed to prune sessions');
+      Alert.alert('Error', 'Failed to sync sessions');
     }
   };
 
@@ -208,11 +216,14 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
             <Text style={styles.bigRedButtonText}>STOP</Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity onPress={handlePruneSessions} style={styles.headerButton}>
-          <Text style={styles.headerButtonText}>🧹</Text>
+        <TouchableOpacity onPress={handleSync} style={styles.headerButton}>
+          <Text style={styles.headerButtonText}>⟳</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={refetch} style={styles.headerButton}>
-          <Text style={styles.headerButtonText}>↻</Text>
+        <TouchableOpacity 
+          onPress={() => setViewMode(viewMode === 'graph' ? 'list' : 'graph')} 
+          style={styles.headerButton}
+        >
+          <Text style={styles.headerButtonText}>{viewMode === 'graph' ? '☰' : '◎'}</Text>
         </TouchableOpacity>
         <TouchableOpacity 
           onPress={() => {
@@ -374,11 +385,31 @@ export function AgentsScreen({ selectedAgent, onSelectAgent }: AgentsScreenProps
     <View style={styles.container}>
       {renderHeader()}
       
-      <GraphView
-        agents={agents}
-        selectedAgent={selectedAgent}
-        onSelectAgent={onSelectAgent}
-      />
+      {viewMode === 'graph' ? (
+        <GraphView
+          agents={agents}
+          selectedAgent={selectedAgent}
+          onSelectAgent={onSelectAgent}
+        />
+      ) : (
+        <FlatList
+          data={sortedAgents}
+          keyExtractor={(item) => item.session_id}
+          renderItem={({ item }) => (
+            <AgentNode
+              agent={item}
+              selected={selectedAgent?.session_id === item.session_id}
+              onPress={() => onSelectAgent(item)}
+            />
+          )}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <View style={styles.centered}>
+              <Text style={styles.emptyText}>No agents running</Text>
+            </View>
+          }
+        />
+      )}
 
       {/* Actions Modal */}
       <Modal
@@ -809,5 +840,12 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+  },
+  listContent: {
+    paddingVertical: 8,
+  },
+  emptyText: {
+    color: '#888888',
+    fontSize: 16,
   },
 });

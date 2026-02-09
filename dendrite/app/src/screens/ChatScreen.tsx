@@ -12,6 +12,7 @@ import {
   Alert,
   Modal,
 } from 'react-native';
+import Markdown from 'react-native-markdown-display';
 import { useMessages } from '../hooks/useMessages';
 import { Agent, Message, api } from '../api/client';
 import { FileExplorerScreen } from './FileExplorerScreen';
@@ -152,9 +153,11 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         <Text style={styles.roleLabel}>
           {isUser ? 'You' : 'Agent'}
         </Text>
-        <Text style={styles.messageText}>
-          {item.content}
-        </Text>
+        {isUser ? (
+          <Text style={styles.messageText}>{item.content}</Text>
+        ) : (
+          <Markdown style={markdownStyles}>{item.content}</Markdown>
+        )}
         <Text style={styles.timestamp}>
           {formatTime(item.timestamp)}
         </Text>
@@ -277,6 +280,88 @@ function formatTime(isoString: string): string {
   const date = new Date(isoString);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  heading1: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  heading2: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '600',
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  heading3: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  code_inline: {
+    backgroundColor: '#1a1a2e',
+    color: '#e06c75',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 13,
+    paddingHorizontal: 4,
+    borderRadius: 3,
+  },
+  fence: {
+    backgroundColor: '#1a1a2e',
+    color: '#abb2bf',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 13,
+    padding: 10,
+    borderRadius: 6,
+    marginVertical: 8,
+  },
+  code_block: {
+    backgroundColor: '#1a1a2e',
+    color: '#abb2bf',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 13,
+    padding: 10,
+    borderRadius: 6,
+    marginVertical: 8,
+  },
+  blockquote: {
+    backgroundColor: '#1a1a2e',
+    borderLeftWidth: 3,
+    borderLeftColor: '#007AFF',
+    paddingLeft: 12,
+    marginVertical: 8,
+  },
+  bullet_list: {
+    marginVertical: 4,
+  },
+  ordered_list: {
+    marginVertical: 4,
+  },
+  list_item: {
+    flexDirection: 'row',
+    marginVertical: 2,
+  },
+  link: {
+    color: '#007AFF',
+    textDecorationLine: 'underline',
+  },
+  strong: {
+    fontWeight: '700',
+  },
+  em: {
+    fontStyle: 'italic',
+  },
+});
 
 const styles = StyleSheet.create({
   container: {

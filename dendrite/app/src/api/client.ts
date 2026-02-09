@@ -139,7 +139,8 @@ class ApiClient {
     });
   }
 
-  async pruneSessions(): Promise<void> {
+  async syncSessions(): Promise<void> {
+    // Triggers full sync: prunes dead sessions AND discovers new ones
     await this.request('/actions/prune-sessions', {
       method: 'POST',
     });

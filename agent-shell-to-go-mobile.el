@@ -611,16 +611,34 @@ Spawns a new dispatcher for a project."
 
 (defun agent-shell-to-go-mobile--handle-check-sessions-request (_payload)
   "Handle a check_sessions_request from the backend.
-Reports all alive session IDs back to the backend for pruning dead sessions."
-  (agent-shell-to-go-mobile--debug "Checking alive sessions")
-  (let ((alive-session-ids
-         (cl-loop for buf in agent-shell-to-go-mobile--active-buffers
-                  when (buffer-live-p buf)
-                  collect (buffer-local-value 'agent-shell-to-go-mobile--session-id buf))))
-    (agent-shell-to-go-mobile--debug "Reporting %d alive sessions" (length alive-session-ids))
+Reports all agent-shell buffers back to the backend for full sync:
+- Returns full info for ALL tracked sessions (backend will upsert)
+- Also discovers and enables mobile mode on any untracked buffers"
+  (agent-shell-to-go-mobile--debug "Checking sessions for sync")
+  (let ((all-sessions nil))
+    ;; First, discover any agent-shell buffers that aren't tracked yet
+    (dolist (buf (buffer-list))
+      (when (and (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (and (derived-mode-p 'agent-shell-mode)
+                        (not agent-shell-to-go-mobile-mode))))
+        ;; This is an agent-shell buffer without mobile mode - enable it
+        (with-current-buffer buf
+          (agent-shell-to-go-mobile-mode 1))))
+    ;; Now collect full info for ALL tracked sessions
+    (dolist (buf agent-shell-to-go-mobile--active-buffers)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (push `((session_id . ,agent-shell-to-go-mobile--session-id)
+                  (buffer_name . ,(buffer-name))
+                  (project . ,(agent-shell-to-go-mobile--get-project-name))
+                  (project_path . ,(agent-shell-to-go-mobile--get-project-path))
+                  (timestamp . ,(agent-shell-to-go-mobile--iso-timestamp)))
+                all-sessions))))
+    (agent-shell-to-go-mobile--debug "Reporting %d sessions for sync" (length all-sessions))
     (agent-shell-to-go-mobile--post
      "/events/alive-sessions"
-     `((session_ids . ,(vconcat alive-session-ids))))))
+     `((sessions . ,(vconcat all-sessions))))))
 
 ;;; Integration with meta-agent-shell
 

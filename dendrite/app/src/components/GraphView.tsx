@@ -267,11 +267,14 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       });
     }
     
-    // Position ring 1 (dispatchers) and record their angles
+    // Position ring 1 (dispatchers) and record their angles - sorted alphabetically
     if (nodesByDepth[1]) {
       const radius = ringRadii[1];
-      nodesByDepth[1].forEach((agent, i) => {
-        const angle = (2 * Math.PI * i) / nodesByDepth[1].length - Math.PI / 2;
+      const sortedDispatchers = [...nodesByDepth[1]].sort((a, b) => 
+        a.buffer_name.localeCompare(b.buffer_name)
+      );
+      sortedDispatchers.forEach((agent, i) => {
+        const angle = (2 * Math.PI * i) / sortedDispatchers.length - Math.PI / 2;
         const x = centerX + Math.cos(angle) * radius;
         const y = centerY + Math.sin(angle) * radius;
         
@@ -289,10 +292,12 @@ export function GraphView({ agents, selectedAgent, onSelectAgent }: GraphViewPro
       if (!nodesByDepth[depth]) continue;
       const radius = ringRadii[depth];
       
-      // Sort agents by project so same-project agents are adjacent
-      const sortedAgents = [...nodesByDepth[depth]].sort((a, b) => 
-        a.project.localeCompare(b.project)
-      );
+      // Sort agents by project, then alphabetically by buffer name
+      const sortedAgents = [...nodesByDepth[depth]].sort((a, b) => {
+        const projectCmp = a.project.localeCompare(b.project);
+        if (projectCmp !== 0) return projectCmp;
+        return a.buffer_name.localeCompare(b.buffer_name);
+      });
       
       // Group by project
       const byProject = new Map<string, Agent[]>();

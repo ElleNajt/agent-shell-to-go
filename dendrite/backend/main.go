@@ -208,6 +208,12 @@ func (s *Server) setupRoutes() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	}).Methods("GET")
+
+	// Debug endpoints
+	s.router.HandleFunc("/debug/ws-status", s.handleDebugWSStatus).Methods("GET")
+	s.router.HandleFunc("/debug/sessions", s.handleDebugSessions).Methods("GET")
+	s.router.HandleFunc("/debug/send-message", s.handleDebugSendMessage).Methods("POST", "GET")
+	s.router.HandleFunc("/debug/messages/{session_id}", s.handleDebugMessages).Methods("GET")
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
@@ -984,6 +990,127 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"projects": projects})
 }
 
+// Debug handlers
+
+func (s *Server) handleDebugWSStatus(w http.ResponseWriter, r *http.Request) {
+	s.wsMutex.RLock()
+	count := len(s.wsClients)
+	s.wsMutex.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"connected_clients": count,
+	})
+}
+
+func (s *Server) handleDebugSessions(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(`
+		SELECT session_id, buffer_name, project, status 
+		FROM agents 
+		WHERE closed_at IS NULL 
+		ORDER BY last_activity DESC
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var sessions []map[string]string
+	for rows.Next() {
+		var sessionID, bufferName, project, status string
+		if err := rows.Scan(&sessionID, &bufferName, &project, &status); err == nil {
+			sessions = append(sessions, map[string]string{
+				"session_id":  sessionID,
+				"buffer_name": bufferName,
+				"project":     project,
+				"status":      status,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
+}
+
+func (s *Server) handleDebugSendMessage(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	content := r.URL.Query().Get("content")
+
+	if sessionID == "" || content == "" {
+		http.Error(w, "session_id and content query params required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[DEBUG] Simulating send for session %s: %s", sessionID, content)
+
+	// Store the user message
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO messages (session_id, role, content, timestamp)
+		VALUES (?, 'user', ?, ?)
+	`, sessionID, content, timestamp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Broadcast send_request for Emacs
+	s.broadcast(WSEvent{
+		Type: "send_request",
+		Payload: map[string]string{
+			"session_id": sessionID,
+			"content":    content,
+		},
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     "sent",
+		"session_id": sessionID,
+		"content":    content,
+		"timestamp":  timestamp,
+	})
+}
+
+func (s *Server) handleDebugMessages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	rows, err := s.db.Query(`
+		SELECT id, role, content, timestamp
+		FROM messages
+		WHERE session_id = ?
+		ORDER BY timestamp ASC
+	`, sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var role, content, timestamp string
+		if err := rows.Scan(&id, &role, &content, &timestamp); err == nil {
+			messages = append(messages, map[string]interface{}{
+				"id":        id,
+				"role":      role,
+				"content":   content,
+				"timestamp": timestamp,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id": sessionID,
+		"count":      len(messages),
+		"messages":   messages,
+	})
+}
+
 // WebSocket handling
 
 // WSClient represents a connected WebSocket client
@@ -991,6 +1118,15 @@ type WSClient struct {
 	conn       *websocket.Conn
 	authorized bool
 }
+
+const (
+	// Time allowed to write a message to the peer
+	wsWriteWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer
+	wsPongWait = 60 * time.Second
+	// Send pings to peer with this period (must be less than pongWait)
+	wsPingPeriod = 54 * time.Second
+)
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Tailscale is the auth layer - all connections are authorized
@@ -1006,9 +1142,35 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("websocket client connected: %s", conn.RemoteAddr())
 
-	// Keep connection alive
+	// Set up ping/pong handlers for keepalive
+	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
+
+	// Goroutine to send periodic pings
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(wsPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Read loop - keeps connection alive and handles cleanup
 	go func() {
 		defer func() {
+			close(done)
 			s.wsMutex.Lock()
 			delete(s.wsClients, conn)
 			s.wsMutex.Unlock()
@@ -1021,7 +1183,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			// No need to handle messages - just keep connection alive
+			// Reset read deadline on any message
+			conn.SetReadDeadline(time.Now().Add(wsPongWait))
 		}
 	}()
 }

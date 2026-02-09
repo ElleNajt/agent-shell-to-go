@@ -20,6 +20,7 @@ export interface Message {
   role: 'user' | 'agent' | 'tool';
   content: string;
   timestamp: string;
+  status?: 'sending' | 'sent';  // For user messages: sending = in flight, sent = server received
 }
 
 export interface WSEvent {

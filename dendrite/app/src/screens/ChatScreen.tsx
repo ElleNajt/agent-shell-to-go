@@ -160,9 +160,16 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             <Markdown style={markdownStyles}>{item.content}</Markdown>
           </View>
         )}
-        <Text style={styles.timestamp}>
-          {formatTime(item.timestamp)}
-        </Text>
+        <View style={styles.timestampRow}>
+          <Text style={styles.timestamp}>
+            {formatTime(item.timestamp)}
+          </Text>
+          {isUser && item.status && (
+            <Text style={styles.deliveryStatus}>
+              {item.status === 'sending' ? '○' : '✓'}
+            </Text>
+          )}
+        </View>
       </View>
     );
   };
@@ -559,11 +566,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  timestampRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 4,
+  },
   timestamp: {
     color: '#888888',
     fontSize: 10,
-    marginTop: 6,
-    textAlign: 'right',
+  },
+  deliveryStatus: {
+    color: '#4CAF50',
+    fontSize: 10,
   },
   inputContainer: {
     flexDirection: 'row',

@@ -20,7 +20,13 @@ The Slack transport mirrors agent-shell conversations to Slack threads, enabling
 
 ** Authorized Users (required)
 
-You *must* set an allowlist of Slack user IDs:
+You *must* configure who can interact with agents. Set your user ID:
+
+#+begin_src elisp
+(setq agent-shell-to-go-slack-user-id "U01234567")
+#+end_src
+
+This auto-populates ~agent-shell-to-go-slack-authorized-users~. For multiple users:
 
 #+begin_src elisp
 (setq agent-shell-to-go-slack-authorized-users '("U01234567" "U89ABCDEF"))

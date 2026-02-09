@@ -1729,6 +1729,11 @@ With prefix arg or DRY-RUN non-nil, just report what would be deleted."
 (defun agent-shell-to-go-slack--init ()
   "Initialize Slack transport."
   (agent-shell-to-go-slack--load-env)
+  ;; Auto-populate authorized-users from user-id if not set
+  (when (and agent-shell-to-go-slack-user-id
+             (not agent-shell-to-go-slack-authorized-users))
+    (setq agent-shell-to-go-slack-authorized-users
+          (list agent-shell-to-go-slack-user-id)))
   (when (and agent-shell-to-go-slack-bot-token
              agent-shell-to-go-slack-app-token)
     (condition-case err

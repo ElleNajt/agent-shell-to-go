@@ -140,6 +140,57 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         Alert.alert("Copied", "Message copied to clipboard");
     };
 
+    const renderDiff = (content: string) => {
+        // Parse diff format: --- old\n<old content>\n+++ new\n<new content>
+        const lines = content.split("\n");
+        let inOld = false;
+        let inNew = false;
+
+        return (
+            <View>
+                {lines.map((line, index) => {
+                    if (line === "--- old") {
+                        inOld = true;
+                        inNew = false;
+                        return (
+                            <Text key={index} style={styles.diffHeader}>
+                                {line}
+                            </Text>
+                        );
+                    }
+                    if (line === "+++ new") {
+                        inOld = false;
+                        inNew = true;
+                        return (
+                            <Text key={index} style={styles.diffHeader}>
+                                {line}
+                            </Text>
+                        );
+                    }
+                    if (inOld) {
+                        return (
+                            <Text key={index} style={styles.diffRemoved}>
+                                {line}
+                            </Text>
+                        );
+                    }
+                    if (inNew) {
+                        return (
+                            <Text key={index} style={styles.diffAdded}>
+                                {line}
+                            </Text>
+                        );
+                    }
+                    return (
+                        <Text key={index} style={styles.fileContentText}>
+                            {line}
+                        </Text>
+                    );
+                })}
+            </View>
+        );
+    };
+
     const renderMessage = ({ item }: { item: Message }) => {
         const isUser = item.role === "user";
         const isTool = item.role === "tool";
@@ -233,9 +284,13 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                     </View>
                     {isExpanded && isFileOp && fileContent && (
                         <View style={styles.fileContentContainer}>
-                            <Text style={styles.fileContentText}>
-                                {fileContent}
-                            </Text>
+                            {toolName === "Edit" ? (
+                                renderDiff(fileContent)
+                            ) : (
+                                <Text style={styles.fileContentText}>
+                                    {fileContent}
+                                </Text>
+                            )}
                         </View>
                     )}
                     {!isExpanded &&
@@ -286,8 +341,8 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     return (
         <KeyboardAvoidingView
             style={styles.container}
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+            behavior="padding"
+            keyboardVerticalOffset={Platform.OS === "ios" ? 50 : 0}
         >
             {/* Header */}
             <View style={styles.header}>
@@ -694,6 +749,27 @@ const styles = StyleSheet.create({
     },
     fileContentText: {
         color: "#e0e0e0",
+        fontSize: 11,
+        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+        lineHeight: 16,
+    },
+    diffHeader: {
+        color: "#888888",
+        fontSize: 11,
+        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+        lineHeight: 16,
+        fontWeight: "600",
+    },
+    diffRemoved: {
+        color: "#f87171",
+        backgroundColor: "rgba(248, 113, 113, 0.1)",
+        fontSize: 11,
+        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+        lineHeight: 16,
+    },
+    diffAdded: {
+        color: "#4ade80",
+        backgroundColor: "rgba(74, 222, 128, 0.1)",
         fontSize: 11,
         fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
         lineHeight: 16,

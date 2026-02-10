@@ -248,6 +248,11 @@ ORIG-FN is the original function, ARGS are its arguments."
                   (file-path (alist-get 'file_path raw-input))
                   (pattern (alist-get 'pattern raw-input))
                   (content (alist-get 'content raw-input))
+                  (old-string (alist-get 'old_string raw-input))
+                  (new-string (alist-get 'new_string raw-input))
+                  (query (alist-get 'query raw-input))
+                  (url (alist-get 'url raw-input))
+                  (prompt (alist-get 'prompt raw-input))
                   ;; Build a display string with relevant info
                   (display (cond
                             ;; Bash/terminal commands - show the command
@@ -256,11 +261,25 @@ ORIG-FN is the original function, ARGS are its arguments."
                             (file-path (format "%s: %s" (or title "File") file-path))
                             ;; Search operations - show pattern
                             (pattern (format "%s: %s" (or title "Search") pattern))
+                            ;; Edit operations - show old_string context
+                            (old-string (format "%s: %s" (or title "Edit")
+                                                (truncate-string-to-width old-string 50)))
+                            ;; Web search - show query
+                            (query (format "%s: %s" (or title "Search") query))
+                            ;; Web fetch - show url
+                            (url (format "%s: %s" (or title "Fetch") url))
+                            ;; Task/prompt - show prompt
+                            (prompt (format "%s: %s" (or title "Task")
+                                            (truncate-string-to-width prompt 50)))
                             ;; Write with content - show truncated preview
                             ((and content (> (length content) 0))
                              (format "%s: %s..." (or title "Write")
                                      (truncate-string-to-width content 50)))
-                            ;; Fallback to title or generic
+                            ;; Fallback - show raw-input summary if available
+                            (raw-input (format "%s: %s" (or title "Tool")
+                                               (truncate-string-to-width
+                                                (format "%s" raw-input) 60)))
+                            ;; Last resort
                             (title title)
                             (t "Tool call"))))
              (with-current-buffer buffer

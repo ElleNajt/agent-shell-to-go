@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 	_ "github.com/mattn/go-sqlite3"
-	"nhooyr.io/websocket"
 )
 
 // Config holds server configuration
@@ -1109,12 +1109,14 @@ func (s *Server) handleDebugMessages(w http.ResponseWriter, r *http.Request) {
 
 // WebSocket handling
 
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow any origin (Tailscale is the auth layer)
+	},
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Accept the WebSocket connection with permissive options
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Allow any origin (Tailscale is the auth layer)
-		InsecureSkipVerify: true,
-	})
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("websocket upgrade error: %v", err)
 		return
@@ -1134,13 +1136,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.wsMutex.Lock()
 			delete(s.wsClients, conn)
 			s.wsMutex.Unlock()
-			conn.Close(websocket.StatusNormalClosure, "")
+			conn.Close()
 			log.Printf("websocket client disconnected: %s", remoteAddr)
 		}()
 
-		ctx := context.Background()
 		for {
-			_, msg, err := conn.Read(ctx)
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				log.Printf("websocket read error from %s: %v", remoteAddr, err)
 				return
@@ -1160,12 +1161,11 @@ func (s *Server) broadcast(event WSEvent) {
 	s.wsMutex.RLock()
 	defer s.wsMutex.RUnlock()
 
-	ctx := context.Background()
 	for conn, authorized := range s.wsClients {
 		if !authorized {
 			continue // Only send to authorized clients
 		}
-		err := conn.Write(ctx, websocket.MessageText, data)
+		err := conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
 			log.Printf("error sending to websocket: %v", err)
 		}

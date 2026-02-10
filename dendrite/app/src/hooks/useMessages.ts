@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { api, Message, WSEvent } from "../api/client";
 
+// Counter for unique WebSocket message IDs (negative to avoid collision with server IDs)
+let wsMessageIdCounter = -1;
+
 export function useMessages(sessionId: string | null) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [loading, setLoading] = useState(false);
@@ -13,7 +16,14 @@ export function useMessages(sessionId: string | null) {
         setLoading(true);
         try {
             const data = await api.getMessages(sessionId);
-            setMessages(data);
+            // Deduplicate by id (in case DB has duplicates)
+            const seen = new Set<number>();
+            const deduped = data.filter((m: Message) => {
+                if (seen.has(m.id)) return false;
+                seen.add(m.id);
+                return true;
+            });
+            setMessages(deduped);
             setError(null);
         } catch (e) {
             setError(
@@ -40,7 +50,7 @@ export function useMessages(sessionId: string | null) {
 
                 setMessages((prev) => {
                     const newMsg = {
-                        id: Date.now(),
+                        id: wsMessageIdCounter--,
                         session_id: event.payload.session_id,
                         role: event.payload.role as "user" | "agent" | "tool",
                         content: event.payload.content,
@@ -62,7 +72,7 @@ export function useMessages(sessionId: string | null) {
 
             // Optimistically add the message with 'sending' status
             const optimisticMessage: Message = {
-                id: Date.now(),
+                id: wsMessageIdCounter--,
                 session_id: sessionId,
                 role: "user",
                 content: content.trim(),

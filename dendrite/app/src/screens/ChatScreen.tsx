@@ -33,9 +33,13 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     const [showFileExplorer, setShowFileExplorer] = useState(false);
     const flatListRef = useRef<FlatList>(null);
     const [showScrollButton, setShowScrollButton] = useState(false);
+    const scrollMetrics = useRef({ distanceFromBottom: 0, isAtBottom: true });
 
     const scrollToBottom = () => {
         flatListRef.current?.scrollToEnd({ animated: true });
+        // Hide button immediately when user taps it
+        setShowScrollButton(false);
+        scrollMetrics.current.isAtBottom = true;
     };
 
     const handleScroll = (event: any) => {
@@ -43,8 +47,21 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             event.nativeEvent;
         const distanceFromBottom =
             contentSize.height - layoutMeasurement.height - contentOffset.y;
-        // Show button if more than 100px from bottom
+        scrollMetrics.current.distanceFromBottom = distanceFromBottom;
+        scrollMetrics.current.isAtBottom = distanceFromBottom <= 100;
         setShowScrollButton(distanceFromBottom > 100);
+    };
+
+    // Check if we should show scroll button when content changes
+    const handleContentSizeChange = (width: number, height: number) => {
+        // If user was at bottom, stay at bottom
+        if (scrollMetrics.current.isAtBottom) {
+            flatListRef.current?.scrollToEnd({ animated: false });
+            setShowScrollButton(false);
+        } else {
+            // User was scrolled up, show the button
+            setShowScrollButton(true);
+        }
     };
 
     const handleSend = () => {
@@ -344,6 +361,7 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                         contentContainerStyle={styles.messagesList}
                         onScroll={handleScroll}
                         scrollEventThrottle={100}
+                        onContentSizeChange={handleContentSizeChange}
                     />
                     {showScrollButton && (
                         <TouchableOpacity
@@ -569,7 +587,7 @@ const styles = StyleSheet.create({
     },
     floatingScrollButton: {
         position: "absolute",
-        bottom: 80,
+        bottom: 100,
         right: 16,
         width: 44,
         height: 44,
@@ -599,6 +617,7 @@ const styles = StyleSheet.create({
     },
     messagesList: {
         padding: 16,
+        paddingBottom: 80,
     },
     messageContainer: {
         marginBottom: 12,

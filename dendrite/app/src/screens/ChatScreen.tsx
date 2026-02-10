@@ -32,9 +32,19 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
     const [showFileExplorer, setShowFileExplorer] = useState(false);
     const flatListRef = useRef<FlatList>(null);
+    const [showScrollButton, setShowScrollButton] = useState(false);
 
     const scrollToBottom = () => {
         flatListRef.current?.scrollToEnd({ animated: true });
+    };
+
+    const handleScroll = (event: any) => {
+        const { layoutMeasurement, contentOffset, contentSize } =
+            event.nativeEvent;
+        const distanceFromBottom =
+            contentSize.height - layoutMeasurement.height - contentOffset.y;
+        // Show button if more than 100px from bottom
+        setShowScrollButton(distanceFromBottom > 100);
     };
 
     const handleSend = () => {
@@ -315,22 +325,6 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                 />
             </Modal>
 
-            {/* Status bar with jump to bottom */}
-            <View
-                style={[
-                    styles.statusBar,
-                    { backgroundColor: getStatusColor(agent.status) },
-                ]}
-            >
-                <Text style={styles.statusBarText}>{agent.status}</Text>
-                <TouchableOpacity
-                    onPress={scrollToBottom}
-                    style={styles.jumpButton}
-                >
-                    <Text style={styles.jumpButtonText}>↓ Bottom</Text>
-                </TouchableOpacity>
-            </View>
-
             {/* Messages */}
             {loading && messages.length === 0 ? (
                 <View style={styles.centered}>
@@ -341,13 +335,27 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                     <Text style={styles.errorText}>{error}</Text>
                 </View>
             ) : (
-                <FlatList
-                    ref={flatListRef}
-                    data={messages}
-                    keyExtractor={(item) => String(item.id)}
-                    renderItem={renderMessage}
-                    contentContainerStyle={styles.messagesList}
-                />
+                <>
+                    <FlatList
+                        ref={flatListRef}
+                        data={messages}
+                        keyExtractor={(item) => String(item.id)}
+                        renderItem={renderMessage}
+                        contentContainerStyle={styles.messagesList}
+                        onScroll={handleScroll}
+                        scrollEventThrottle={100}
+                    />
+                    {showScrollButton && (
+                        <TouchableOpacity
+                            style={styles.floatingScrollButton}
+                            onPress={scrollToBottom}
+                        >
+                            <Text style={styles.floatingScrollButtonText}>
+                                ↓
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                </>
             )}
 
             {/* Input */}
@@ -380,19 +388,6 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             </View>
         </KeyboardAvoidingView>
     );
-}
-
-function getStatusColor(status: string): string {
-    switch (status) {
-        case "ready":
-            return "#4CAF50";
-        case "processing":
-            return "#FF9800";
-        case "permission_required":
-            return "#F44336";
-        default:
-            return "#9E9E9E";
-    }
 }
 
 function formatTime(isoString: string): string {
@@ -572,28 +567,25 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "600",
     },
-    statusBar: {
-        flexDirection: "row",
-        paddingVertical: 4,
-        paddingHorizontal: 12,
+    floatingScrollButton: {
+        position: "absolute",
+        bottom: 80,
+        right: 16,
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: "rgba(0, 122, 255, 0.9)",
+        justifyContent: "center",
         alignItems: "center",
-        justifyContent: "space-between",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 5,
     },
-    statusBarText: {
+    floatingScrollButtonText: {
         color: "#FFFFFF",
-        fontSize: 11,
-        fontWeight: "600",
-        textTransform: "uppercase",
-    },
-    jumpButton: {
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        backgroundColor: "rgba(255,255,255,0.2)",
-        borderRadius: 4,
-    },
-    jumpButtonText: {
-        color: "#FFFFFF",
-        fontSize: 11,
+        fontSize: 20,
         fontWeight: "600",
     },
     centered: {

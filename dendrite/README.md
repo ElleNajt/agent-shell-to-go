@@ -12,7 +12,7 @@ Mobile App (React Native)
     └── WebSocket ──► Backend (machine 2) ◄── Emacs (machine 2)
 ```
 
-Each machine runs its own backend. The mobile app can switch between machines.
+Each machine with agents runs its own backend. The mobile app connects to all of them and lets you switch between machines. You only need to run the app (Expo) on one machine - typically your laptop.
 
 ## Setup
 
@@ -45,9 +45,19 @@ Create `~/.dendrite/config.json` with your machines:
 
 Use your Tailscale IPs. You can find them with `tailscale ip -4`.
 
-### 3. Start Everything
+### 3. Start the Backend
 
-From the repo root:
+On each machine where you run agents:
+
+```bash
+cd dendrite/backend
+go build -o dendrite-backend main.go
+AGENT_SHELL_API_TOKEN=NOAUTH ./dendrite-backend --listen "$(tailscale ip -4):8080"
+```
+
+### 4. Start the App (one machine only)
+
+On your laptop (or wherever you want to run Expo):
 
 ```bash
 ./start.sh
@@ -55,19 +65,20 @@ From the repo root:
 
 This will:
 - Copy your config to the app directory
-- Build and start the backend on your Tailscale IP
+- Build and start the local backend
 - Start the Expo dev server for the mobile app
 
-### 4. Mobile App
+Or if you only want the app (backend already running elsewhere):
 
-The app reads the machines from your config. You can switch between machines by tapping the machine name in the header.
-
-For development only:
 ```bash
+cp ~/.dendrite/config.json dendrite/app/config.json
 cd dendrite/app
-npm install
 npx expo start
 ```
+
+### 5. Mobile App
+
+The app reads the machines from your config. You can switch between machines by tapping the machine name in the header.
 
 ## Components
 

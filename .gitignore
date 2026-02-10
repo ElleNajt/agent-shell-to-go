@@ -10,6 +10,7 @@ agent-shell-mobile/backend/mobile-backend
 
 # Config with secrets/IPs
 agent-shell-mobile/mobile/config.json
+dendrite/app/config.json
 
 # Node
 node_modules/

@@ -1,0 +1,3 @@
+{
+    "machines": [{ "name": "My Machine", "url": "http://YOUR_IP:8080" }]
+}

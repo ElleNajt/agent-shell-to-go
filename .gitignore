@@ -4,6 +4,9 @@
 # Build artifacts
 agent-shell-mobile/backend/agent-shell-backend
 agent-shell-mobile/backend/mobile-backend
+dendrite/backend/backend
+dendrite/backend/dendrite-backend
+dendrite/backend/mobile-backend
 
 # Database
 *.db

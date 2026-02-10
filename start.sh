@@ -2,6 +2,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_DIR="$HOME/.dendrite"
+CONFIG_FILE="$CONFIG_DIR/config.json"
 
 # Cleanup function
 cleanup() {
@@ -17,24 +19,31 @@ cleanup() {
 # Set trap before starting anything
 trap cleanup INT TERM EXIT
 
-# Get Tailscale IP
-TAILSCALE_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || ifconfig | grep "inet 100\." | awk '{print $2}')
+# Check for config file
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Config not found at $CONFIG_FILE"
+    echo "Creating default config..."
+    mkdir -p "$CONFIG_DIR"
 
-if [ -z "$TAILSCALE_IP" ]; then
-    echo "Error: Could not find Tailscale IP"
-    exit 1
-fi
+    # Get Tailscale IP for default config
+    TAILSCALE_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || ifconfig | grep "inet 100\." | awk '{print $2}')
 
-echo "Using Tailscale IP: $TAILSCALE_IP"
-
-# Update mobile config
-cat >"$SCRIPT_DIR/dendrite/app/config.json" <<EOF
+    cat >"$CONFIG_FILE" <<EOF
 {
-  "backendUrl": "http://$TAILSCALE_IP:8080",
-  "token": "NOAUTH"
+  "machines": [
+    { "name": "$(hostname -s)", "url": "http://${TAILSCALE_IP:-YOUR_IP}:8080" }
+  ]
 }
 EOF
-echo "Updated dendrite/app/config.json"
+    echo "Created $CONFIG_FILE - edit it to add your machines"
+fi
+
+# Copy config to app directory
+cp "$CONFIG_FILE" "$SCRIPT_DIR/dendrite/app/config.json"
+echo "Using config from $CONFIG_FILE"
+
+# Get listen IP from config or detect it
+TAILSCALE_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || ifconfig | grep "inet 100\." | awk '{print $2}')
 
 # Start backend
 echo "Starting backend on $TAILSCALE_IP:8080..."

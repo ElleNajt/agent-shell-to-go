@@ -30,26 +30,41 @@ Add to your Doom Emacs config (inside the `use-package! agent-shell-to-go` block
 
 This auto-detects the machine's Tailscale IP at startup and configures Emacs to push agent events to the backend.
 
-### 2. Start the Backend
+### 2. Configure Machines
+
+Create `~/.dendrite/config.json` with your machines:
+
+```json
+{
+  "machines": [
+    { "name": "MacBook", "url": "http://100.x.x.x:8080" },
+    { "name": "GPU Box", "url": "http://100.y.y.y:8080" }
+  ]
+}
+```
+
+Use your Tailscale IPs. You can find them with `tailscale ip -4`.
+
+### 3. Start Everything
+
+From the repo root:
 
 ```bash
-cd dendrite/backend
-./start-backend.sh
+./start.sh
 ```
 
 This will:
-- Build the Go binary if needed (or pass `--build` to force rebuild)
-- Auto-detect your Tailscale IP
-- Attempt to configure Emacs via emacsclient (optional — the Emacs config above handles this persistently)
-- Start the backend on `<tailscale-ip>:8080`
+- Copy your config to the app directory
+- Build and start the backend on your Tailscale IP
+- Start the Expo dev server for the mobile app
 
-### 3. Mobile App
+### 4. Mobile App
 
-In the app, add a machine with the backend URL (e.g., `http://100.x.x.x:8080`). You can switch between machines by tapping the machine name in the header.
+The app reads the machines from your config. You can switch between machines by tapping the machine name in the header.
 
-For development:
+For development only:
 ```bash
-cd app
+cd dendrite/app
 npm install
 npx expo start
 ```

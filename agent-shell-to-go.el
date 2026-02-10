@@ -91,10 +91,11 @@ Take your AI agent sessions anywhere - chat from your phone!"
   "Set up agent-shell-to-go with enabled transports."
   (interactive)
   
-  ;; Load and register Slack transport (default, for backwards compatibility)
-  (require 'agent-shell-to-go-slack)
-  (agent-shell-to-go-slack-setup)
-  
+  ;; Load Slack transport if configured
+  (when (bound-and-true-p agent-shell-to-go-slack-bot-token)
+    (require 'agent-shell-to-go-slack)
+    (agent-shell-to-go-slack-setup))
+
   ;; Load backend transport if configured
   (when (bound-and-true-p agent-shell-to-go-backend-url)
     (require 'agent-shell-to-go-backend)

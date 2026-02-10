@@ -254,16 +254,21 @@ ORIG-FN is the original function, ARGS are its arguments."
                   (url (alist-get 'url raw-input))
                   (prompt (alist-get 'prompt raw-input))
                   ;; Build a display string with relevant info
+                  ;; For file ops, include content after newline for frontend to parse
                   (display (cond
                             ;; Bash/terminal commands - show the command
                             (command command)
-                            ;; File operations - show tool name + path
-                            (file-path (format "%s: %s" (or title "File") file-path))
+                            ;; Edit operations - show path + diff
+                            ((and file-path old-string new-string)
+                             (format "%s: %s\n--- old\n%s\n+++ new\n%s"
+                                     (or title "Edit") file-path old-string new-string))
+                            ;; Write operations - show path + content
+                            ((and file-path content)
+                             (format "%s: %s\n%s" (or title "Write") file-path content))
+                            ;; Read operations - just show path (content comes in tool_call_update)
+                            (file-path (format "%s: %s" (or title "Read") file-path))
                             ;; Search operations - show pattern
                             (pattern (format "%s: %s" (or title "Search") pattern))
-                            ;; Edit operations - show old_string context
-                            (old-string (format "%s: %s" (or title "Edit")
-                                                (truncate-string-to-width old-string 50)))
                             ;; Web search - show query
                             (query (format "%s: %s" (or title "Search") query))
                             ;; Web fetch - show url
@@ -271,10 +276,6 @@ ORIG-FN is the original function, ARGS are its arguments."
                             ;; Task/prompt - show prompt
                             (prompt (format "%s: %s" (or title "Task")
                                             (truncate-string-to-width prompt 50)))
-                            ;; Write with content - show truncated preview
-                            ((and content (> (length content) 0))
-                             (format "%s: %s..." (or title "Write")
-                                     (truncate-string-to-width content 50)))
                             ;; Fallback - show raw-input summary if available
                             (raw-input (format "%s: %s" (or title "Tool")
                                                (truncate-string-to-width
@@ -296,7 +297,7 @@ ORIG-FN is the original function, ARGS are its arguments."
                   (format "[%s]%s"
                           (upcase status)
                           (if (and output (> (length output) 0))
-                              (format " %s" (truncate-string-to-width output 500))
+                              (format " %s" output)
                             "")))))))))))
   (apply orig-fn args))
 

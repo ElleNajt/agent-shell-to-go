@@ -1,5 +1,14 @@
 * High Priority (Bugs/Broken)
 
+** DONE Tool call text blocks getting truncated / file content not showing
+CLOSED: [2025-02-10]
+Two issues fixed:
+1. Removed 500 char truncation on tool_call_update output
+2. For Write/Edit tool_call: now includes full content/diff after newline
+   - Edit: "Edit: /path\n--- old\n<old>\n+++ new\n<new>"
+   - Write: "Write: /path\n<content>"
+   - Read: content comes in tool_call_update (rawOutput)
+
 ** DONE Fix markdown text box rendering bug
 CLOSED: [2025-02-09]
 Text box sometimes becomes thin and stretches down past its container.
@@ -65,6 +74,22 @@ Fixed false positives - only show unread after first view (commit 308cc40)
 ** DONE Remove [RUNNING] / [COMPLETED] tags from tool messages
 CLOSED: [2025-02-09]
 Status now shown via icon only (⏳/✓/✗), tags stripped from display (commit ee621ab)
+
+** TODO Visual feedback when agent is interrupted
+When pressing stop, show "Interrupted" indicator at bottom of chat to confirm the stop worked.
+Currently there's no visual confirmation that the interrupt succeeded.
+
+Implementation plan:
+1. Emacs: In --handle-stop-request, after calling agent-shell-interrupt, send status event:
+   (agent-shell-to-go-mobile--send-status "interrupted")
+2. Backend: Already handles status events and broadcasts - no changes needed.
+3. App (ChatScreen.tsx): Listen for status WebSocket events where status === "interrupted",
+   insert a system message in chat like "--- Interrupted ---" (stays visible in history).
+
+** TODO Sync chat history on refresh
+When syncing sessions, also pull existing chat history from Emacs buffer.
+Currently only new messages (after mobile mode enabled) appear in the app.
+Requires parsing buffer text into user/agent turns using prompt markers.
 
 ** TODO Better UI for message queuing
 Improve frontend display of queued messages and ensure queuing works reliably.

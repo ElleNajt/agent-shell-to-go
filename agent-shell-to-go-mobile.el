@@ -684,5 +684,52 @@ Call this after both agent-shell-to-go-mobile and meta-agent-shell are loaded."
     (add-hook 'meta-agent-shell-after-spawn-hook
               #'agent-shell-to-go-mobile--after-spawn-hook)))
 
+;;; Dendrite backend process management
+
+(defcustom agent-shell-to-go-mobile-backend-dir
+  (expand-file-name "~/code/agent-shell-to-go/dendrite/backend/")
+  "Directory containing the dendrite backend source and binary."
+  :type 'directory
+  :group 'agent-shell-to-go-mobile)
+
+(defvar agent-shell-to-go-mobile--backend-restart-timer nil
+  "Timer for restarting the backend after a crash.")
+
+(defun agent-shell-to-go-mobile--backend-sentinel (process event)
+  "Sentinel for the dendrite backend PROCESS. Restart on non-zero exit."
+  (let ((event-str (string-trim event)))
+    (message "dendrite-backend: %s" event-str)
+    (when (and (memq (process-status process) '(exit signal))
+               (not (eq (process-exit-status process) 0)))
+      (setq agent-shell-to-go-mobile--backend-restart-timer
+            (run-with-timer 10 nil #'agent-shell-to-go-mobile-start-backend)))))
+
+;;;###autoload
+(defun agent-shell-to-go-mobile-start-backend ()
+  "Start the dendrite backend process. Builds if binary is missing."
+  (interactive)
+  (when (get-process "dendrite-backend")
+    (delete-process "dendrite-backend"))
+  (let ((default-directory agent-shell-to-go-mobile-backend-dir)
+        (binary (expand-file-name "dendrite-backend" agent-shell-to-go-mobile-backend-dir)))
+    (unless (file-exists-p binary)
+      (message "dendrite-backend: building...")
+      (shell-command "go build -o dendrite-backend ."))
+    (let ((proc (start-process "dendrite-backend" "*dendrite-backend*" binary)))
+      (set-process-sentinel proc #'agent-shell-to-go-mobile--backend-sentinel)
+      (set-process-query-on-exit-flag proc nil)
+      (message "dendrite-backend: started"))))
+
+;;;###autoload
+(defun agent-shell-to-go-mobile-stop-backend ()
+  "Stop the dendrite backend process."
+  (interactive)
+  (when agent-shell-to-go-mobile--backend-restart-timer
+    (cancel-timer agent-shell-to-go-mobile--backend-restart-timer)
+    (setq agent-shell-to-go-mobile--backend-restart-timer nil))
+  (when (get-process "dendrite-backend")
+    (delete-process "dendrite-backend")
+    (message "dendrite-backend: stopped")))
+
 (provide 'agent-shell-to-go-mobile)
 ;;; agent-shell-to-go-mobile.el ends here

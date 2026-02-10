@@ -12,7 +12,9 @@ Mobile App (React Native)
     └── WebSocket ──► Backend (machine 2) ◄── Emacs (machine 2)
 ```
 
-Each machine with agents runs its own backend. The mobile app connects to all of them and lets you switch between machines. You only need to run the app (Expo) on one machine - typically your laptop.
+Each machine with agents runs its own backend. The mobile app connects to all of them and lets you switch between machines.
+
+During development, you run Expo on your laptop to build/test the app. Once published, the app runs standalone on your phone - no Expo needed.
 
 ## Setup
 

@@ -59,6 +59,24 @@ export function useMessages(sessionId: string | null) {
                     return [...prev, newMsg];
                 });
             }
+
+            // Handle status events - show system messages for important status changes
+            if (
+                event.type === "status" &&
+                event.payload.session_id === sessionId &&
+                event.payload.status === "interrupted"
+            ) {
+                setMessages((prev) => {
+                    const systemMsg = {
+                        id: wsMessageIdCounter--,
+                        session_id: event.payload.session_id,
+                        role: "system" as "user" | "agent" | "tool",
+                        content: "--- Interrupted ---",
+                        timestamp: event.payload.timestamp,
+                    };
+                    return [...prev, systemMsg];
+                });
+            }
         });
 
         return () => {

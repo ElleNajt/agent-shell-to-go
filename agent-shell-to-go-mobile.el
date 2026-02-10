@@ -571,7 +571,9 @@ Interrupts the agent in the appropriate buffer."
           (agent-shell-to-go-mobile--debug "Stopping agent: %s" (buffer-name buffer))
           (with-current-buffer buffer
             (when (fboundp 'agent-shell-interrupt)
-              (agent-shell-interrupt t)))) ; force=t to skip prompt
+              (agent-shell-interrupt t)) ; force=t to skip prompt
+            ;; Send status to confirm interruption
+            (agent-shell-to-go-mobile--send-status "interrupted")))
       (agent-shell-to-go-mobile--debug "No buffer found for stop: %s" session-id))))
 
 (defun agent-shell-to-go-mobile--handle-close-request (payload)

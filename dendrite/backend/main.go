@@ -1152,6 +1152,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) broadcast(event WSEvent) {
+	s.broadcastWithRetry(event, 0)
+}
+
+func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("error marshaling event: %v", err)
@@ -1159,16 +1163,28 @@ func (s *Server) broadcast(event WSEvent) {
 	}
 
 	s.wsMutex.RLock()
-	defer s.wsMutex.RUnlock()
-
+	clientCount := 0
+	sentCount := 0
 	for conn, authorized := range s.wsClients {
 		if !authorized {
-			continue // Only send to authorized clients
+			continue
 		}
+		clientCount++
 		err := conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
 			log.Printf("error sending to websocket: %v", err)
+		} else {
+			sentCount++
 		}
+	}
+	s.wsMutex.RUnlock()
+
+	// For send_request and stop_request, retry if no clients received it
+	if (event.Type == "send_request" || event.Type == "stop_request") && sentCount == 0 && attempt < 3 {
+		log.Printf("no clients for %s, retrying in 1s (attempt %d)", event.Type, attempt+1)
+		time.AfterFunc(time.Second, func() {
+			s.broadcastWithRetry(event, attempt+1)
+		})
 	}
 }
 

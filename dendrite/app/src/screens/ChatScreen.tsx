@@ -16,7 +16,7 @@ import {
 import * as Clipboard from "expo-clipboard";
 import Markdown from "react-native-markdown-display";
 import { useMessages } from "../hooks/useMessages";
-import { Agent, Message, api } from "../api/client";
+import { Agent, Message, api, WSEvent } from "../api/client";
 import { FileExplorerScreen } from "./FileExplorerScreen";
 
 interface ChatScreenProps {
@@ -34,6 +34,22 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     const flatListRef = useRef<FlatList>(null);
     const [showScrollButton, setShowScrollButton] = useState(false);
     const scrollMetrics = useRef({ distanceFromBottom: 0, isAtBottom: true });
+    const [isProcessing, setIsProcessing] = useState(
+        agent.status === "processing",
+    );
+
+    // Listen for status changes
+    useEffect(() => {
+        const unsubscribe = api.subscribe((event: WSEvent) => {
+            if (
+                event.type === "status" &&
+                event.payload.session_id === agent.session_id
+            ) {
+                setIsProcessing(event.payload.status === "processing");
+            }
+        });
+        return () => unsubscribe();
+    }, [agent.session_id]);
 
     const scrollToBottom = () => {
         flatListRef.current?.scrollToEnd({ animated: true });
@@ -194,7 +210,17 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     const renderMessage = ({ item }: { item: Message }) => {
         const isUser = item.role === "user";
         const isTool = item.role === "tool";
+        const isSystem = item.role === "system";
         const isExpanded = expandedTools.has(item.id);
+
+        // System messages (like "Interrupted")
+        if (isSystem) {
+            return (
+                <View style={styles.systemMessage}>
+                    <Text style={styles.systemMessageText}>{item.content}</Text>
+                </View>
+            );
+        }
 
         // For tool messages, show collapsed by default
         if (isTool) {
@@ -362,14 +388,12 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                     >
                         <Text style={styles.filesButtonText}>📁</Text>
                     </TouchableOpacity>
-                    {agent.status === "processing" && (
-                        <TouchableOpacity
-                            onPress={handleStop}
-                            style={styles.stopButton}
-                        >
-                            <Text style={styles.stopText}>Stop</Text>
-                        </TouchableOpacity>
-                    )}
+                    <TouchableOpacity
+                        onPress={handleStop}
+                        style={styles.stopButton}
+                    >
+                        <Text style={styles.stopText}>Stop</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity
                         onPress={handleRestart}
                         style={styles.restartButton}
@@ -429,6 +453,16 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                         </TouchableOpacity>
                     )}
                 </>
+            )}
+
+            {/* Thinking indicator */}
+            {isProcessing && (
+                <View style={styles.thinkingContainer}>
+                    <ActivityIndicator size="small" color="#007AFF" />
+                    <Text style={styles.thinkingText}>
+                        Agent is thinking...
+                    </Text>
+                </View>
             )}
 
             {/* Input */}
@@ -700,6 +734,18 @@ const styles = StyleSheet.create({
         alignSelf: "stretch",
         maxWidth: "100%",
     },
+    systemMessage: {
+        alignSelf: "center",
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        marginVertical: 8,
+    },
+    systemMessageText: {
+        color: "#FF9800",
+        fontSize: 12,
+        fontStyle: "italic",
+        textAlign: "center",
+    },
     toolHeader: {
         flexDirection: "row",
         alignItems: "flex-start",
@@ -799,6 +845,21 @@ const styles = StyleSheet.create({
     deliveryStatus: {
         color: "#4CAF50",
         fontSize: 10,
+    },
+    thinkingContainer: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingVertical: 8,
+        backgroundColor: "#1A1A2E",
+        borderTopWidth: 1,
+        borderTopColor: "#333333",
+    },
+    thinkingText: {
+        color: "#888888",
+        fontSize: 13,
+        marginLeft: 8,
+        fontStyle: "italic",
     },
     inputContainer: {
         flexDirection: "row",

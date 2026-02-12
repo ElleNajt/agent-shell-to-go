@@ -481,6 +481,33 @@ View and interact with agents from the mobile app."
           (message "Connection successful: %s" agent-shell-to-go-mobile-backend-url)
         (message "Connection failed: HTTP %s - %s" status body)))))
 
+;;;###autoload
+(defun agent-shell-to-go-mobile-debug-status ()
+  "Show current status of mobile backend integration for debugging."
+  (interactive)
+  (let ((ws-open (and agent-shell-to-go-mobile--websocket
+                      (websocket-openp agent-shell-to-go-mobile--websocket)))
+        (last-msg (if agent-shell-to-go-mobile--websocket-last-message-time
+                      (format-time-string "%Y-%m-%d %H:%M:%S"
+                                          agent-shell-to-go-mobile--websocket-last-message-time)
+                    "never")))
+    (message (concat "Mobile Backend Status:\n"
+                     "  Backend URL: %s\n"
+                     "  WebSocket state: %s (open: %s)\n"
+                     "  Connect attempts: %d\n"
+                     "  Last WS message: %s\n"
+                     "  Active buffers: %d\n"
+                     "  Reconnect timer: %s\n"
+                     "  Debug mode: %s")
+             (or agent-shell-to-go-mobile-backend-url "not set")
+             agent-shell-to-go-mobile--websocket-state
+             ws-open
+             agent-shell-to-go-mobile--websocket-connect-count
+             last-msg
+             (length agent-shell-to-go-mobile--active-buffers)
+             (if agent-shell-to-go-mobile--websocket-reconnect-timer "active" "none")
+             agent-shell-to-go-mobile-debug)))
+
 ;;; WebSocket client for receiving messages from mobile app
 
 (defvar agent-shell-to-go-mobile--websocket nil
@@ -489,33 +516,63 @@ View and interact with agents from the mobile app."
 (defvar agent-shell-to-go-mobile--websocket-reconnect-timer nil
   "Timer for reconnecting WebSocket.")
 
+(defvar agent-shell-to-go-mobile--websocket-state 'disconnected
+  "Current WebSocket state: disconnected, connecting, connected, reconnecting.")
+
+(defvar agent-shell-to-go-mobile--websocket-connect-count 0
+  "Number of WebSocket connection attempts since last successful connection.")
+
+(defvar agent-shell-to-go-mobile--websocket-last-message-time nil
+  "Time of last WebSocket message received.")
+
 (defun agent-shell-to-go-mobile--websocket-connect ()
   "Connect to the mobile backend WebSocket to receive messages."
   (when agent-shell-to-go-mobile--websocket
     (ignore-errors (websocket-close agent-shell-to-go-mobile--websocket)))
+  (setq agent-shell-to-go-mobile--websocket-state 'connecting)
+  (cl-incf agent-shell-to-go-mobile--websocket-connect-count)
+  (agent-shell-to-go-mobile--debug "[WS] Connecting (attempt %d, %d active buffers)"
+                                   agent-shell-to-go-mobile--websocket-connect-count
+                                   (length agent-shell-to-go-mobile--active-buffers))
   (let* ((token (agent-shell-to-go-mobile--load-token))
          (ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
                          "/ws?token=" (url-hexify-string (or token "")))))
     (condition-case err
         (setq agent-shell-to-go-mobile--websocket
               (websocket-open ws-url
+                              :on-open (lambda (_ws)
+                                         (setq agent-shell-to-go-mobile--websocket-state 'connected)
+                                         (setq agent-shell-to-go-mobile--websocket-connect-count 0)
+                                         (agent-shell-to-go-mobile--debug "[WS] Connected successfully"))
                               :on-message #'agent-shell-to-go-mobile--on-websocket-message
                               :on-close (lambda (_ws)
-                                          (agent-shell-to-go-mobile--debug "WebSocket closed")
-                                          (agent-shell-to-go-mobile--websocket-schedule-reconnect))
+                                          (let ((prev-state agent-shell-to-go-mobile--websocket-state))
+                                            (setq agent-shell-to-go-mobile--websocket-state 'disconnected)
+                                            (agent-shell-to-go-mobile--debug "[WS] Closed (was: %s, last msg: %s)"
+                                                                             prev-state
+                                                                             (if agent-shell-to-go-mobile--websocket-last-message-time
+                                                                                 (format-time-string "%H:%M:%S" agent-shell-to-go-mobile--websocket-last-message-time)
+                                                                               "never"))
+                                            (agent-shell-to-go-mobile--websocket-schedule-reconnect)))
                               :on-error (lambda (_ws _type err)
-                                          (agent-shell-to-go-mobile--debug "WebSocket error: %s" err))))
+                                          (agent-shell-to-go-mobile--debug "[WS] Error: %s (state: %s)"
+                                                                           err agent-shell-to-go-mobile--websocket-state))))
       (error
-       (agent-shell-to-go-mobile--debug "WebSocket connect failed: %s" err)
+       (setq agent-shell-to-go-mobile--websocket-state 'disconnected)
+       (agent-shell-to-go-mobile--debug "[WS] Connect failed: %s" err)
        (agent-shell-to-go-mobile--websocket-schedule-reconnect)))))
 
 (defun agent-shell-to-go-mobile--websocket-schedule-reconnect ()
-  "Schedule WebSocket reconnection."
+  "Schedule WebSocket reconnection with exponential backoff."
   (when agent-shell-to-go-mobile--websocket-reconnect-timer
     (cancel-timer agent-shell-to-go-mobile--websocket-reconnect-timer))
   (when agent-shell-to-go-mobile--active-buffers
-    (setq agent-shell-to-go-mobile--websocket-reconnect-timer
-          (run-with-timer 5 nil #'agent-shell-to-go-mobile--websocket-connect))))
+    (setq agent-shell-to-go-mobile--websocket-state 'reconnecting)
+    ;; Exponential backoff: 5s, 10s, 20s, 40s, max 60s
+    (let ((delay (min 60 (* 5 (expt 2 (min 3 agent-shell-to-go-mobile--websocket-connect-count))))))
+      (agent-shell-to-go-mobile--debug "[WS] Scheduling reconnect in %ds" delay)
+      (setq agent-shell-to-go-mobile--websocket-reconnect-timer
+            (run-with-timer delay nil #'agent-shell-to-go-mobile--websocket-connect)))))
 
 (defun agent-shell-to-go-mobile--websocket-disconnect ()
   "Disconnect WebSocket."
@@ -526,14 +583,15 @@ View and interact with agents from the mobile app."
     (ignore-errors (websocket-close agent-shell-to-go-mobile--websocket))
     (setq agent-shell-to-go-mobile--websocket nil)))
 
-(defun agent-shell-to-go-mobile--on-websocket-message (ws frame)
+(defun agent-shell-to-go-mobile--on-websocket-message (_ws frame)
   "Handle incoming WebSocket FRAME from mobile backend."
+  (setq agent-shell-to-go-mobile--websocket-last-message-time (current-time))
   (condition-case err
       (let* ((payload (websocket-frame-text frame))
              (data (json-read-from-string payload))
              (type (alist-get 'type data))
              (event-payload (alist-get 'payload data)))
-        (agent-shell-to-go-mobile--debug "WebSocket message type=%s payload=%S" type event-payload)
+        (agent-shell-to-go-mobile--debug "[WS] Received: type=%s" type)
         (pcase type
           ("send_request"
            (agent-shell-to-go-mobile--handle-send-request event-payload))
@@ -602,14 +660,19 @@ Interrupts the agent in the appropriate buffer."
   (let* ((session-id (alist-get 'session_id payload))
          (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
     (if buffer
-        (progn
-          (agent-shell-to-go-mobile--debug "Stopping agent: %s" (buffer-name buffer))
-          (with-current-buffer buffer
-            (when (fboundp 'agent-shell-interrupt)
-              (agent-shell-interrupt t)) ; force=t to skip prompt
-            ;; Send status to confirm interruption
-            (agent-shell-to-go-mobile--send-status "interrupted")))
-      (agent-shell-to-go-mobile--debug "No buffer found for stop: %s" session-id))))
+        (with-current-buffer buffer
+          (let ((was-busy (and (boundp 'agent-shell--state)
+                               (alist-get :busy agent-shell--state))))
+            (agent-shell-to-go-mobile--debug "[STOP] Interrupting %s (was-busy: %s)"
+                                             (buffer-name buffer) was-busy)
+            (if (fboundp 'agent-shell-interrupt)
+                (progn
+                  (agent-shell-interrupt t) ; force=t to skip prompt
+                  (agent-shell-to-go-mobile--debug "[STOP] agent-shell-interrupt called")
+                  ;; Send status to confirm interruption
+                  (agent-shell-to-go-mobile--send-status "interrupted"))
+              (agent-shell-to-go-mobile--debug "[STOP] agent-shell-interrupt not available!"))))
+      (agent-shell-to-go-mobile--debug "[STOP] No buffer found for session: %s" session-id))))
 
 (defun agent-shell-to-go-mobile--handle-close-request (payload)
   "Handle a close_request PAYLOAD from mobile app.

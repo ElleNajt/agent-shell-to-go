@@ -494,7 +494,11 @@ func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	sessionID := vars["session_id"]
 
-	log.Printf("stop request for session %s", sessionID)
+	s.wsMutex.RLock()
+	clientCount := len(s.wsClients)
+	s.wsMutex.RUnlock()
+
+	log.Printf("[STOP] Request for session %s (ws clients: %d)", sessionID, clientCount)
 
 	// Broadcast as a "stop_request" event - Emacs will interrupt the agent
 	s.broadcast(WSEvent{
@@ -991,11 +995,25 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDebugWSStatus(w http.ResponseWriter, r *http.Request) {
 	s.wsMutex.RLock()
 	count := len(s.wsClients)
+	// Count authorized vs unauthorized clients
+	authorized := 0
+	for _, auth := range s.wsClients {
+		if auth {
+			authorized++
+		}
+	}
 	s.wsMutex.RUnlock()
+
+	// Get active session count
+	var activeCount int
+	s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE closed_at IS NULL`).Scan(&activeCount)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"connected_clients": count,
+		"websocket_clients":     count,
+		"authorized_clients":    authorized,
+		"active_agent_sessions": activeCount,
+		"server_time":           time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -1118,35 +1136,48 @@ var upgrader = websocket.Upgrader{
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("websocket upgrade error: %v", err)
+		log.Printf("[WS] upgrade error: %v", err)
 		return
 	}
 
 	remoteAddr := r.RemoteAddr
+	connectedAt := time.Now()
 
 	s.wsMutex.Lock()
 	s.wsClients[conn] = true
+	clientCount := len(s.wsClients)
 	s.wsMutex.Unlock()
 
-	log.Printf("websocket client connected: %s", remoteAddr)
+	log.Printf("[WS] Client connected: %s (total clients: %d)", remoteAddr, clientCount)
 
 	// Read loop - keeps connection alive and handles cleanup
 	go func() {
 		defer func() {
 			s.wsMutex.Lock()
 			delete(s.wsClients, conn)
+			remainingClients := len(s.wsClients)
 			s.wsMutex.Unlock()
 			conn.Close()
-			log.Printf("websocket client disconnected: %s", remoteAddr)
+			duration := time.Since(connectedAt).Round(time.Second)
+			log.Printf("[WS] Client disconnected: %s (was connected %v, remaining clients: %d)", remoteAddr, duration, remainingClients)
 		}()
 
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("websocket read error from %s: %v", remoteAddr, err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("[WS] Unexpected close from %s: %v", remoteAddr, err)
+				} else {
+					log.Printf("[WS] Read error from %s: %v", remoteAddr, err)
+				}
 				return
 			}
-			log.Printf("websocket message from %s: %s", remoteAddr, string(msg))
+			// Log incoming messages (truncated for brevity)
+			msgStr := string(msg)
+			if len(msgStr) > 100 {
+				msgStr = msgStr[:100] + "..."
+			}
+			log.Printf("[WS] Message from %s: %s", remoteAddr, msgStr)
 		}
 	}()
 }
@@ -1158,13 +1189,14 @@ func (s *Server) broadcast(event WSEvent) {
 func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("error marshaling event: %v", err)
+		log.Printf("[BROADCAST] Error marshaling event: %v", err)
 		return
 	}
 
 	s.wsMutex.RLock()
 	clientCount := 0
 	sentCount := 0
+	var sendErrors []string
 	for conn, authorized := range s.wsClients {
 		if !authorized {
 			continue
@@ -1172,16 +1204,28 @@ func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 		clientCount++
 		err := conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
-			log.Printf("error sending to websocket: %v", err)
+			sendErrors = append(sendErrors, err.Error())
 		} else {
 			sentCount++
 		}
 	}
 	s.wsMutex.RUnlock()
 
+	// Log broadcast result for important event types
+	switch event.Type {
+	case "send_request", "stop_request", "close_request", "restart_request":
+		if sentCount > 0 {
+			log.Printf("[BROADCAST] %s: sent to %d/%d clients", event.Type, sentCount, clientCount)
+		} else if clientCount > 0 {
+			log.Printf("[BROADCAST] %s: FAILED to send to any of %d clients: %v", event.Type, clientCount, sendErrors)
+		} else {
+			log.Printf("[BROADCAST] %s: no clients connected", event.Type)
+		}
+	}
+
 	// For send_request and stop_request, retry if no clients received it
 	if (event.Type == "send_request" || event.Type == "stop_request") && sentCount == 0 && attempt < 3 {
-		log.Printf("no clients for %s, retrying in 1s (attempt %d)", event.Type, attempt+1)
+		log.Printf("[BROADCAST] %s: retrying in 1s (attempt %d/3)", event.Type, attempt+1)
 		time.AfterFunc(time.Second, func() {
 			s.broadcastWithRetry(event, attempt+1)
 		})

@@ -338,6 +338,39 @@ ORIG-FN is the original function, ARGS are its arguments."
            (or command title "Permission required"))))))
   (apply orig-fn args))
 
+(defun agent-shell-to-go-mobile--on-subscribe-to-client-events (orig-fn &rest args)
+  "Advice for agent-shell--subscribe-to-client-events. Add our own error subscription.
+ORIG-FN is the original function, ARGS are its arguments."
+  ;; Call original first to set up all subscriptions
+  (apply orig-fn args)
+  ;; Add our own error subscription if mobile mode is enabled
+  (let* ((state (plist-get args :state))
+         (buffer (and state (alist-get :buffer state)))
+         (client (and state (alist-get :client state))))
+    (when (and buffer
+               (buffer-live-p buffer)
+               (buffer-local-value 'agent-shell-to-go-mobile-mode buffer)
+               client)
+      (acp-subscribe-to-errors
+       :client client
+       :buffer buffer
+       :on-error (lambda (error)
+                   (when (and (buffer-live-p buffer)
+                              (buffer-local-value 'agent-shell-to-go-mobile-mode buffer))
+                     (with-current-buffer buffer
+                       (let* ((message (or (alist-get 'message error)
+                                           (alist-get 'data error)
+                                           "Unknown error"))
+                              (code (alist-get 'code error))
+                              (details (alist-get 'details (alist-get 'data error)))
+                              (error-text (if details
+                                              (format "%s: %s" message details)
+                                            message)))
+                         (agent-shell-to-go-mobile--debug "Error received: %s (code: %s)" error-text code)
+                         (agent-shell-to-go-mobile--send-message
+                          "error"
+                          error-text)))))))))
+
 ;;; Minor mode
 
 (cl-defun agent-shell-to-go-mobile--enable ()
@@ -361,6 +394,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go-mobile--on-notification)
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go-mobile--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go-mobile--on-heartbeat-stop)
+  (advice-add 'agent-shell--subscribe-to-client-events :around #'agent-shell-to-go-mobile--on-subscribe-to-client-events)
   
   ;; Add kill-buffer hook
   (add-hook 'kill-buffer-hook #'agent-shell-to-go-mobile--on-buffer-kill nil t)
@@ -399,6 +433,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go-mobile--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go-mobile--on-request)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go-mobile--on-heartbeat-stop)
+    (advice-remove 'agent-shell--subscribe-to-client-events #'agent-shell-to-go-mobile--on-subscribe-to-client-events)
     (agent-shell-to-go-mobile--websocket-disconnect))
   
   (agent-shell-to-go-mobile--debug "disabled"))

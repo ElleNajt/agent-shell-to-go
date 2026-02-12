@@ -211,6 +211,7 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         const isUser = item.role === "user";
         const isTool = item.role === "tool";
         const isSystem = item.role === "system";
+        const isError = item.role === "error";
         const isExpanded = expandedTools.has(item.id);
 
         // System messages (like "Interrupted")
@@ -218,6 +219,16 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             return (
                 <View style={styles.systemMessage}>
                     <Text style={styles.systemMessageText}>{item.content}</Text>
+                </View>
+            );
+        }
+
+        // Error messages
+        if (isError) {
+            return (
+                <View style={styles.errorMessage}>
+                    <Text style={styles.errorIcon}>⚠️</Text>
+                    <Text style={styles.errorMessageText}>{item.content}</Text>
                 </View>
             );
         }
@@ -745,6 +756,28 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontStyle: "italic",
         textAlign: "center",
+    },
+    errorMessage: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        alignSelf: "stretch",
+        backgroundColor: "#3d1a1a",
+        borderLeftWidth: 3,
+        borderLeftColor: "#F44336",
+        borderRadius: 8,
+        padding: 12,
+        marginVertical: 4,
+        marginHorizontal: 12,
+    },
+    errorIcon: {
+        fontSize: 16,
+        marginRight: 8,
+    },
+    errorMessageText: {
+        flex: 1,
+        color: "#F44336",
+        fontSize: 14,
+        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     },
     toolHeader: {
         flexDirection: "row",

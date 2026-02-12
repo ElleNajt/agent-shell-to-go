@@ -1150,7 +1150,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[WS] Client connected: %s (total clients: %d)", remoteAddr, clientCount)
 
-	// Read loop - keeps connection alive and handles cleanup
+	// We don't expect to receive messages from Emacs - it only listens.
+	// But we need a read goroutine to detect connection close.
+	// The "bad MASK" error at 5 seconds suggests something is sending malformed data.
+	// Let's try just keeping the connection open without reading.
 	go func() {
 		defer func() {
 			s.wsMutex.Lock()
@@ -1162,22 +1165,17 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[WS] Client disconnected: %s (was connected %v, remaining clients: %d)", remoteAddr, duration, remainingClients)
 		}()
 
+		// Set a very long read deadline and just wait
+		// This keeps the connection goroutine alive without actively reading
+		conn.SetReadDeadline(time.Now().Add(24 * time.Hour))
+
+		// Still need to read to detect close, but ignore content
 		for {
-			_, msg, err := conn.ReadMessage()
+			_, _, err := conn.ReadMessage()
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("[WS] Unexpected close from %s: %v", remoteAddr, err)
-				} else {
-					log.Printf("[WS] Read error from %s: %v", remoteAddr, err)
-				}
+				log.Printf("[WS] Connection ended for %s: %v (connected for %v)", remoteAddr, err, time.Since(connectedAt).Round(time.Millisecond))
 				return
 			}
-			// Log incoming messages (truncated for brevity)
-			msgStr := string(msg)
-			if len(msgStr) > 100 {
-				msgStr = msgStr[:100] + "..."
-			}
-			log.Printf("[WS] Message from %s: %s", remoteAddr, msgStr)
 		}
 	}()
 }

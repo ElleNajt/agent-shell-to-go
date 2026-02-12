@@ -572,6 +572,10 @@ View and interact with agents from the mobile app."
                               :on-open (lambda (_ws)
                                          (setq agent-shell-to-go-mobile--websocket-state 'connected)
                                          (setq agent-shell-to-go-mobile--websocket-connect-count 0)
+                                         ;; Cancel any pending reconnect timer
+                                         (when agent-shell-to-go-mobile--websocket-reconnect-timer
+                                           (cancel-timer agent-shell-to-go-mobile--websocket-reconnect-timer)
+                                           (setq agent-shell-to-go-mobile--websocket-reconnect-timer nil))
                                          (agent-shell-to-go-mobile--debug "[WS] Connected successfully"))
                               :on-message #'agent-shell-to-go-mobile--on-websocket-message
                               :on-close (lambda (_ws)

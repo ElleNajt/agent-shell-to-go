@@ -49,9 +49,9 @@ Alternative to setting `agent-shell-to-go-mobile-token' directly."
   :type 'string
   :group 'agent-shell-to-go-mobile)
 
-(defcustom agent-shell-to-go-mobile-debug nil
-  "When non-nil, log debug messages to *Messages*."
-  :type 'boolean
+(defcustom agent-shell-to-go-mobile-log-directory "~/.dendrite/debug/logs"
+  "Directory for debug log files."
+  :type 'string
   :group 'agent-shell-to-go-mobile)
 
 (defcustom agent-shell-to-go-mobile-async t
@@ -76,10 +76,32 @@ Used to prevent echoing the message back to the backend.")
 
 ;;; Utility functions
 
+(defvar agent-shell-to-go-mobile--log-file nil
+  "Current log file path, set on first log write each day.")
+
+(defun agent-shell-to-go-mobile--ensure-log-directory ()
+  "Ensure the log directory exists."
+  (let ((dir (expand-file-name agent-shell-to-go-mobile-log-directory)))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    dir))
+
+(defun agent-shell-to-go-mobile--get-log-file ()
+  "Get the current log file path, creating a new one each day."
+  (let* ((dir (agent-shell-to-go-mobile--ensure-log-directory))
+         (today (format-time-string "%Y-%m-%d"))
+         (expected-file (expand-file-name (concat "dendrite-" today ".log") dir)))
+    (unless (equal agent-shell-to-go-mobile--log-file expected-file)
+      (setq agent-shell-to-go-mobile--log-file expected-file))
+    agent-shell-to-go-mobile--log-file))
+
 (defun agent-shell-to-go-mobile--debug (format-string &rest args)
-  "Log a debug message if `agent-shell-to-go-mobile-debug' is non-nil."
-  (when agent-shell-to-go-mobile-debug
-    (apply #'message (concat "agent-shell-to-go-mobile: " format-string) args)))
+  "Log a debug message to the log file."
+  (let* ((timestamp (format-time-string "%H:%M:%S.%3N"))
+         (msg (apply #'format format-string args))
+         (log-line (format "%s %s\n" timestamp msg))
+         (log-file (agent-shell-to-go-mobile--get-log-file)))
+    (write-region log-line nil log-file t 'silent)))
 
 (defun agent-shell-to-go-mobile--load-token ()
   "Load the auth token from various sources."
@@ -490,7 +512,8 @@ View and interact with agents from the mobile app."
         (last-msg (if agent-shell-to-go-mobile--websocket-last-message-time
                       (format-time-string "%Y-%m-%d %H:%M:%S"
                                           agent-shell-to-go-mobile--websocket-last-message-time)
-                    "never")))
+                    "never"))
+        (log-file (agent-shell-to-go-mobile--get-log-file)))
     (message (concat "Mobile Backend Status:\n"
                      "  Backend URL: %s\n"
                      "  WebSocket state: %s (open: %s)\n"
@@ -498,7 +521,7 @@ View and interact with agents from the mobile app."
                      "  Last WS message: %s\n"
                      "  Active buffers: %d\n"
                      "  Reconnect timer: %s\n"
-                     "  Debug mode: %s")
+                     "  Log file: %s")
              (or agent-shell-to-go-mobile-backend-url "not set")
              agent-shell-to-go-mobile--websocket-state
              ws-open
@@ -506,7 +529,13 @@ View and interact with agents from the mobile app."
              last-msg
              (length agent-shell-to-go-mobile--active-buffers)
              (if agent-shell-to-go-mobile--websocket-reconnect-timer "active" "none")
-             agent-shell-to-go-mobile-debug)))
+             log-file)))
+
+;;;###autoload
+(defun agent-shell-to-go-mobile-open-log ()
+  "Open the current debug log file."
+  (interactive)
+  (find-file (agent-shell-to-go-mobile--get-log-file)))
 
 ;;; WebSocket client for receiving messages from mobile app
 

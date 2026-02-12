@@ -637,29 +637,35 @@ TODO: Use proper acp/agent-shell resume functionality when available."
 
 (defun agent-shell-to-go-mobile--handle-new-agent-request (payload)
   "Handle a new_agent_request PAYLOAD from mobile app.
-Spawns a new named agent."
+Spawns a new named agent. Deferred via timer to avoid blocking websocket."
   (let* ((name (alist-get 'name payload))
          (path (alist-get 'path payload))
          (task (alist-get 'task payload)))
     (agent-shell-to-go-mobile--debug "Spawning agent: %s in %s" name path)
-    (if (and (fboundp 'meta-agent-shell-start-named-agent) path name)
-        (meta-agent-shell-start-named-agent path name task)
-      ;; Fallback if meta-agent-shell not available
-      (when (and path (file-directory-p path))
-        (let ((default-directory path))
-          (agent-shell))))))
+    ;; Defer to avoid blocking websocket callback
+    (run-at-time 0 nil
+                 (lambda ()
+                   (if (and (fboundp 'meta-agent-shell-start-named-agent) path name)
+                       (meta-agent-shell-start-named-agent path name task)
+                     ;; Fallback if meta-agent-shell not available
+                     (when (and path (file-directory-p path))
+                       (let ((default-directory path))
+                         (agent-shell))))))))
 
 (defun agent-shell-to-go-mobile--handle-new-dispatcher-request (payload)
   "Handle a new_dispatcher_request PAYLOAD from mobile app.
-Spawns a new dispatcher for a project."
+Spawns a new dispatcher for a project. Deferred via timer to avoid blocking websocket."
   (let ((path (alist-get 'path payload)))
     (agent-shell-to-go-mobile--debug "Spawning dispatcher for: %s" path)
-    (if (fboundp 'meta-agent-shell-start-dispatcher)
-        (meta-agent-shell-start-dispatcher path)
-      ;; Fallback
-      (when (and path (file-directory-p path))
-        (let ((default-directory path))
-          (agent-shell))))))
+    ;; Defer to avoid blocking websocket callback
+    (run-at-time 0 nil
+                 (lambda ()
+                   (if (fboundp 'meta-agent-shell-start-dispatcher)
+                       (meta-agent-shell-start-dispatcher path)
+                     ;; Fallback
+                     (when (and path (file-directory-p path))
+                       (let ((default-directory path))
+                         (agent-shell))))))))
 
 (defun agent-shell-to-go-mobile--handle-check-sessions-request (_payload)
   "Handle a check_sessions_request from the backend.

@@ -4,6 +4,34 @@ Take your [agent-shell](https://github.com/xenodium/agent-shell) sessions anywhe
 
 Pairs well with [meta-agent-shell](https://github.com/ElleNajt/meta-agent-shell) for coordinating multiple agents.
 
+## Security Model
+
+**This tool uses Tailscale as its only security boundary.** The backend exposes an unauthenticated HTTP+WebSocket API that can:
+
+- Inject arbitrary prompts into your AI agents (which run with your shell privileges)
+- Read files within active project directories
+- Spawn new agents in specified directories
+- Kill or restart agent processes
+
+**Anyone on your Tailscale network has full access.** This is the entire trust model.
+
+### What You're Trusting
+
+| Trust Boundary | Implication |
+|----------------|-------------|
+| **Tailscale network** | Every device on your tailnet can control your agents |
+| **Expo Go** | Development builds are served over the network |
+| **Your phone** | If compromised, attacker has the backend URL |
+
+### Recommendations
+
+- Only use on Tailscale networks where you control all devices
+- Don't share your tailnet with untrusted parties
+- Be aware that phone compromise = agent compromise
+- The SQLite database stores conversation history in plaintext
+
+This is a reasonable model for a **personal, single-user tool**. If you need stronger isolation, consider adding token authentication (the infrastructure exists but is disabled).
+
 ## Dendrite (Mobile App)
 
 The primary interface is **Dendrite**, a React Native mobile app with a Go backend.

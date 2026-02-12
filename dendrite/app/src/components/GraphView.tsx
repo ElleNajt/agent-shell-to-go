@@ -536,12 +536,26 @@ export function GraphView({
                             node.agent.last_message_role,
                         ) ?? false;
 
-                    // Determine background color: selected > unread > default
+                    // Determine if agent is currently processing
+                    const isProcessing = node.agent.status === "processing";
+
+                    // Determine background and border colors:
+                    // - Selected: blue
+                    // - Processing: orange (takes precedence over unread)
+                    // - Unread (and not processing): purple
+                    // - Default: status color
                     let backgroundColor = "#1E1E1E";
+                    let borderColor = statusColor;
+
                     if (isSelected) {
                         backgroundColor = "#1a3a5c";
+                        borderColor = "#007AFF";
+                    } else if (isProcessing) {
+                        backgroundColor = "#2a1a0c"; // Orange tint for processing
+                        borderColor = "#FF9800";
                     } else if (isUnread) {
                         backgroundColor = "#2a1a3c"; // Purple tint for unread
+                        borderColor = "#9c27b0";
                     }
 
                     return (
@@ -552,11 +566,7 @@ export function GraphView({
                                 {
                                     left: node.x,
                                     top: node.y,
-                                    borderColor: isSelected
-                                        ? "#007AFF"
-                                        : isUnread
-                                          ? "#9c27b0"
-                                          : statusColor,
+                                    borderColor,
                                     backgroundColor,
                                 },
                             ]}

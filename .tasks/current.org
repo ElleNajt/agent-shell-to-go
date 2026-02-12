@@ -5,7 +5,7 @@ CLOSED: [2025-02-10]
 Two issues fixed:
 1. Removed 500 char truncation on tool_call_update output
 2. For Write/Edit tool_call: now includes full content/diff after newline
-   - Edit: "Edit: /path\n--- old\n<old>\n+++ new\n<new>"
+   - Edit: shows diff with red/green coloring
    - Write: "Write: /path\n<content>"
    - Read: content comes in tool_call_update (rawOutput)
 

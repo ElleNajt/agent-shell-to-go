@@ -34,6 +34,8 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         sending,
         sendMessage,
         loadMore,
+        permissionRequest,
+        respondToPermission,
     } = useMessages(agent.session_id);
     const [inputText, setInputText] = useState("");
     const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
@@ -498,12 +500,45 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
             )}
 
             {/* Thinking indicator */}
-            {isProcessing && (
+            {isProcessing && !permissionRequest && (
                 <View style={styles.thinkingContainer}>
                     <ActivityIndicator size="small" color="#007AFF" />
                     <Text style={styles.thinkingText}>
                         Agent is thinking...
                     </Text>
+                </View>
+            )}
+
+            {/* Permission request */}
+            {permissionRequest && (
+                <View style={styles.permissionContainer}>
+                    <Text style={styles.permissionTitle}>
+                        Permission Required
+                    </Text>
+                    <Text style={styles.permissionDescription}>
+                        {permissionRequest.description}
+                    </Text>
+                    <View style={styles.permissionButtons}>
+                        {permissionRequest.options.map((option) => (
+                            <TouchableOpacity
+                                key={option.id}
+                                style={[
+                                    styles.permissionButton,
+                                    option.kind === "allow_once" &&
+                                        styles.permissionButtonAllow,
+                                    option.kind === "allow_always" &&
+                                        styles.permissionButtonAlways,
+                                    option.kind === "reject_once" &&
+                                        styles.permissionButtonReject,
+                                ]}
+                                onPress={() => respondToPermission(option.id)}
+                            >
+                                <Text style={styles.permissionButtonText}>
+                                    {option.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
                 </View>
             )}
 
@@ -936,6 +971,49 @@ const styles = StyleSheet.create({
         fontSize: 13,
         marginLeft: 8,
         fontStyle: "italic",
+    },
+    permissionContainer: {
+        backgroundColor: "#1A1A2E",
+        borderTopWidth: 1,
+        borderTopColor: "#FF9800",
+        padding: 12,
+    },
+    permissionTitle: {
+        color: "#FF9800",
+        fontSize: 14,
+        fontWeight: "600",
+        marginBottom: 6,
+    },
+    permissionDescription: {
+        color: "#CCCCCC",
+        fontSize: 13,
+        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+        marginBottom: 12,
+    },
+    permissionButtons: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+    },
+    permissionButton: {
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 8,
+        backgroundColor: "#333333",
+    },
+    permissionButtonAllow: {
+        backgroundColor: "#2E7D32",
+    },
+    permissionButtonAlways: {
+        backgroundColor: "#1565C0",
+    },
+    permissionButtonReject: {
+        backgroundColor: "#C62828",
+    },
+    permissionButtonText: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        fontWeight: "500",
     },
     inputContainer: {
         flexDirection: "row",

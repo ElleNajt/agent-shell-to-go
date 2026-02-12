@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { api, Message, WSEvent } from "../api/client";
+import {
+    api,
+    Message,
+    WSEvent,
+    PermissionRequest,
+    PermissionOption,
+} from "../api/client";
 
 // Counter for unique WebSocket message IDs (negative to avoid collision with server IDs)
 let wsMessageIdCounter = -1;
@@ -11,6 +17,8 @@ export function useMessages(sessionId: string | null) {
     const [hasMore, setHasMore] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
+    const [permissionRequest, setPermissionRequest] =
+        useState<PermissionRequest | null>(null);
     const oldestTimestamp = useRef<string | null>(null);
 
     const fetchMessages = useCallback(async () => {
@@ -131,6 +139,31 @@ export function useMessages(sessionId: string | null) {
                     return [...prev, systemMsg];
                 });
             }
+
+            // Handle permission request events
+            if (
+                event.type === "permission_request" &&
+                event.payload.session_id === sessionId
+            ) {
+                const payload =
+                    typeof event.payload.payload === "string"
+                        ? JSON.parse(event.payload.payload)
+                        : event.payload.payload;
+                setPermissionRequest({
+                    request_id: payload.request_id,
+                    description: payload.description,
+                    options: payload.options || [],
+                });
+            }
+
+            // Clear permission request when status changes away from permission_required
+            if (
+                event.type === "status" &&
+                event.payload.session_id === sessionId &&
+                event.payload.status !== "permission_required"
+            ) {
+                setPermissionRequest(null);
+            }
         });
 
         return () => {
@@ -179,6 +212,23 @@ export function useMessages(sessionId: string | null) {
         [sessionId],
     );
 
+    const respondToPermission = useCallback(
+        async (optionId: string) => {
+            if (!sessionId) return;
+            try {
+                await api.respondToPermission(sessionId, optionId);
+                setPermissionRequest(null);
+            } catch (e) {
+                setError(
+                    e instanceof Error
+                        ? e.message
+                        : "Failed to respond to permission",
+                );
+            }
+        },
+        [sessionId],
+    );
+
     return {
         messages,
         loading,
@@ -189,5 +239,7 @@ export function useMessages(sessionId: string | null) {
         sendMessage,
         loadMore: loadMoreMessages,
         refetch: fetchMessages,
+        permissionRequest,
+        respondToPermission,
     };
 }

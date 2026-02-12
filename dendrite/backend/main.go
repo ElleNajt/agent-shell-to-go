@@ -170,6 +170,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/events/agent-close", s.handleAgentClose).Methods("POST")
 	s.router.HandleFunc("/events/message", s.handleMessage).Methods("POST")
 	s.router.HandleFunc("/events/status", s.handleStatus).Methods("POST")
+	s.router.HandleFunc("/events/custom", s.handleCustomEvent).Methods("POST")
 
 	// API for mobile app (GET/POST) - include OPTIONS for CORS preflight
 	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET", "OPTIONS")
@@ -178,6 +179,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST", "OPTIONS")
 	s.router.HandleFunc("/agents/{session_id}/restart", s.handleRestartAgent).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/agents/{session_id}/permission", s.handlePermissionResponse).Methods("POST", "OPTIONS")
 
 	// Actions for spawning new agents
 	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
@@ -336,6 +338,64 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.broadcast(WSEvent{Type: "status", Payload: event})
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleCustomEvent(w http.ResponseWriter, r *http.Request) {
+	var event struct {
+		SessionID string          `json:"session_id"`
+		EventType string          `json:"event_type"`
+		Payload   json.RawMessage `json:"payload"`
+		Timestamp string          `json:"timestamp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Custom event: type=%s session=%s", event.EventType, event.SessionID)
+
+	// Broadcast to mobile clients
+	s.broadcast(WSEvent{
+		Type: event.EventType,
+		Payload: map[string]interface{}{
+			"session_id": event.SessionID,
+			"payload":    event.Payload,
+			"timestamp":  event.Timestamp,
+		},
+	})
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handlePermissionResponse(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	var req struct {
+		OptionID string `json:"option_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Permission response: session=%s option=%s", sessionID, req.OptionID)
+
+	// Broadcast permission_response to Emacs
+	s.broadcast(WSEvent{
+		Type: "permission_response",
+		Payload: map[string]string{
+			"session_id": sessionID,
+			"option_id":  req.OptionID,
+		},
+	})
+
+	// Update agent status back to processing
+	_, _ = s.db.Exec(`
+		UPDATE agents SET status = 'processing', last_activity = ?
+		WHERE session_id = ?
+	`, time.Now().Format(time.RFC3339), sessionID)
+
 	w.WriteHeader(http.StatusOK)
 }
 

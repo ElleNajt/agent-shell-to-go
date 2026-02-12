@@ -24,8 +24,26 @@ export interface Message {
 }
 
 export interface WSEvent {
-    type: "agent_spawn" | "agent_close" | "message" | "status" | "send_request";
+    type:
+        | "agent_spawn"
+        | "agent_close"
+        | "message"
+        | "status"
+        | "send_request"
+        | "permission_request";
     payload: any;
+}
+
+export interface PermissionOption {
+    id: string;
+    label: string;
+    kind: string;
+}
+
+export interface PermissionRequest {
+    request_id: string;
+    description: string;
+    options: PermissionOption[];
 }
 
 export interface FileEntry {
@@ -120,6 +138,19 @@ class ApiClient {
         await this.request(`/agents/${encodeURIComponent(sessionId)}/close`, {
             method: "POST",
         });
+    }
+
+    async respondToPermission(
+        sessionId: string,
+        optionId: string,
+    ): Promise<void> {
+        await this.request(
+            `/agents/${encodeURIComponent(sessionId)}/permission`,
+            {
+                method: "POST",
+                body: JSON.stringify({ option_id: optionId }),
+            },
+        );
     }
 
     async restartAgent(

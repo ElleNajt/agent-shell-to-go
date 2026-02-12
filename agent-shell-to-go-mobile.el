@@ -74,6 +74,10 @@ Alternative to setting `agent-shell-to-go-mobile-token' directly."
   "Non-nil when message is being injected from mobile app.
 Used to prevent echoing the message back to the backend.")
 
+(defvar-local agent-shell-to-go-mobile--pending-permission nil
+  "Pending permission request info for this buffer.
+Plist with :request-id, :options, :tool-call-id.")
+
 ;;; Utility functions
 
 (defvar agent-shell-to-go-mobile--log-file nil
@@ -216,6 +220,16 @@ DATA is an alist that will be JSON-encoded."
        (detail . ,(or detail ""))
        (timestamp . ,(agent-shell-to-go-mobile--iso-timestamp))))))
 
+(defun agent-shell-to-go-mobile--send-event (event-type payload)
+  "Send a generic EVENT-TYPE with PAYLOAD to the backend."
+  (when agent-shell-to-go-mobile--session-id
+    (agent-shell-to-go-mobile--post
+     "/events/custom"
+     `((session_id . ,agent-shell-to-go-mobile--session-id)
+       (event_type . ,event-type)
+       (payload . ,payload)
+       (timestamp . ,(agent-shell-to-go-mobile--iso-timestamp))))))
+
 ;;; Advice functions
 
 (defun agent-shell-to-go-mobile--on-send-command (orig-fn &rest args)
@@ -339,7 +353,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (apply orig-fn args))
 
 (defun agent-shell-to-go-mobile--on-request (orig-fn &rest args)
-  "Advice for agent-shell--on-request. Send permission_required status.
+  "Advice for agent-shell--on-request. Send permission request to mobile.
 ORIG-FN is the original function, ARGS are its arguments."
   (let* ((state (plist-get args :state))
          (request (plist-get args :request))
@@ -350,14 +364,37 @@ ORIG-FN is the original function, ARGS are its arguments."
                (buffer-local-value 'agent-shell-to-go-mobile-mode buffer)
                (equal method "session/request_permission"))
       (with-current-buffer buffer
-        (let* ((params (alist-get 'params request))
+        (let* ((request-id (alist-get 'id request))
+               (params (alist-get 'params request))
+               (options (alist-get 'options params))
                (tool-call (alist-get 'toolCall params))
+               (tool-call-id (alist-get 'toolCallId tool-call))
                (title (alist-get 'title tool-call))
                (raw-input (alist-get 'rawInput tool-call))
-               (command (alist-get 'command raw-input)))
+               (command (alist-get 'command raw-input))
+               (description (or command title "Permission required"))
+               ;; Convert options to simpler format for mobile
+               (mobile-options
+                (mapcar (lambda (opt)
+                          (list (cons 'id (alist-get 'id opt))
+                                (cons 'label (alist-get 'label opt))
+                                (cons 'kind (alist-get 'kind opt))))
+                        options)))
+          ;; Store pending permission info
+          (setq agent-shell-to-go-mobile--pending-permission
+                (list :request-id request-id
+                      :options options
+                      :tool-call-id tool-call-id))
+          ;; Send permission request event to backend
+          (agent-shell-to-go-mobile--send-event
+           "permission_request"
+           `((request_id . ,request-id)
+             (description . ,description)
+             (options . ,(vconcat mobile-options))))
+          ;; Also send status update for UI
           (agent-shell-to-go-mobile--send-status
            "permission_required"
-           (or command title "Permission required"))))))
+           description)))))
   (apply orig-fn args))
 
 (defun agent-shell-to-go-mobile--on-subscribe-to-client-events (orig-fn &rest args)
@@ -639,7 +676,9 @@ View and interact with agents from the mobile app."
           ("new_dispatcher_request"
            (agent-shell-to-go-mobile--handle-new-dispatcher-request event-payload))
           ("check_sessions_request"
-           (agent-shell-to-go-mobile--handle-check-sessions-request event-payload))))
+           (agent-shell-to-go-mobile--handle-check-sessions-request event-payload))
+          ("permission_response"
+           (agent-shell-to-go-mobile--handle-permission-response event-payload))))
     (error
      (agent-shell-to-go-mobile--debug "WebSocket message error: %s" err))))
 
@@ -797,6 +836,35 @@ Spawns a new dispatcher for a project. Deferred via timer to avoid blocking webs
                      (when (and path (file-directory-p path))
                        (let ((default-directory path))
                          (agent-shell))))))))
+
+(defun agent-shell-to-go-mobile--handle-permission-response (payload)
+  "Handle a permission_response PAYLOAD from mobile app.
+Sends the permission response back to the ACP client."
+  (let* ((session-id (alist-get 'session_id payload))
+         (option-id (alist-get 'option_id payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (if buffer
+        (with-current-buffer buffer
+          (if agent-shell-to-go-mobile--pending-permission
+              (let* ((request-id (plist-get agent-shell-to-go-mobile--pending-permission :request-id))
+                     (tool-call-id (plist-get agent-shell-to-go-mobile--pending-permission :tool-call-id))
+                     (state agent-shell--state)
+                     (client (alist-get :client state)))
+                (agent-shell-to-go-mobile--debug "Permission response: option=%s request=%s" option-id request-id)
+                ;; Send the permission response
+                (agent-shell--send-permission-response
+                 :client client
+                 :request-id request-id
+                 :option-id option-id
+                 :state state
+                 :tool-call-id tool-call-id
+                 :message-text (format "Selected from mobile: %s" option-id))
+                ;; Clear pending permission
+                (setq agent-shell-to-go-mobile--pending-permission nil)
+                ;; Send status update
+                (agent-shell-to-go-mobile--send-status "processing"))
+            (agent-shell-to-go-mobile--debug "No pending permission for session: %s" session-id)))
+      (agent-shell-to-go-mobile--debug "No buffer found for permission response: %s" session-id))))
 
 (defun agent-shell-to-go-mobile--handle-check-sessions-request (_payload)
   "Handle a check_sessions_request from the backend.

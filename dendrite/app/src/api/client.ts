@@ -17,7 +17,7 @@ export interface Agent {
 export interface Message {
     id: number;
     session_id: string;
-    role: "user" | "agent" | "tool" | "system";
+    role: "user" | "agent" | "tool" | "system" | "error";
     content: string;
     timestamp: string;
     status?: "sending" | "sent"; // For user messages: sending = in flight, sent = server received
@@ -90,10 +90,16 @@ class ApiClient {
         return data.agents || [];
     }
 
-    async getMessages(sessionId: string, limit = 50): Promise<Message[]> {
-        const data = await this.request<{ messages: Message[] | null }>(
-            `/agents/${encodeURIComponent(sessionId)}/messages?limit=${limit}`,
-        );
+    async getMessages(
+        sessionId: string,
+        limit = 50,
+        before?: string,
+    ): Promise<Message[]> {
+        let url = `/agents/${encodeURIComponent(sessionId)}/messages?limit=${limit}`;
+        if (before) {
+            url += `&before=${encodeURIComponent(before)}`;
+        }
+        const data = await this.request<{ messages: Message[] | null }>(url);
         return data.messages || [];
     }
 

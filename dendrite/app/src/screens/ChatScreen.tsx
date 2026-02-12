@@ -25,9 +25,16 @@ interface ChatScreenProps {
 }
 
 export function ChatScreen({ agent, onBack }: ChatScreenProps) {
-    const { messages, loading, error, sending, sendMessage } = useMessages(
-        agent.session_id,
-    );
+    const {
+        messages,
+        loading,
+        loadingMore,
+        hasMore,
+        error,
+        sending,
+        sendMessage,
+        loadMore,
+    } = useMessages(agent.session_id);
     const [inputText, setInputText] = useState("");
     const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
     const [showFileExplorer, setShowFileExplorer] = useState(false);
@@ -66,6 +73,11 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
         scrollMetrics.current.distanceFromBottom = distanceFromBottom;
         scrollMetrics.current.isAtBottom = distanceFromBottom <= 100;
         setShowScrollButton(distanceFromBottom > 100);
+
+        // Load more when near the top (scrolled up)
+        if (contentOffset.y < 100 && hasMore && !loadingMore) {
+            loadMore();
+        }
     };
 
     // Check if we should show scroll button when content changes
@@ -452,6 +464,25 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                         onScroll={handleScroll}
                         scrollEventThrottle={100}
                         onContentSizeChange={handleContentSizeChange}
+                        ListHeaderComponent={
+                            loadingMore ? (
+                                <View style={styles.loadingMore}>
+                                    <ActivityIndicator
+                                        size="small"
+                                        color="#007AFF"
+                                    />
+                                    <Text style={styles.loadingMoreText}>
+                                        Loading older messages...
+                                    </Text>
+                                </View>
+                            ) : !hasMore && messages.length > 0 ? (
+                                <View style={styles.loadingMore}>
+                                    <Text style={styles.loadingMoreText}>
+                                        Beginning of conversation
+                                    </Text>
+                                </View>
+                            ) : null
+                        }
                     />
                     {showScrollButton && (
                         <TouchableOpacity
@@ -718,6 +749,18 @@ const styles = StyleSheet.create({
     messagesList: {
         padding: 16,
         paddingBottom: 80,
+    },
+    loadingMore: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingVertical: 12,
+        marginBottom: 8,
+    },
+    loadingMoreText: {
+        color: "#888888",
+        fontSize: 12,
+        marginLeft: 8,
     },
     messageContainer: {
         marginBottom: 12,

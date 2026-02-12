@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api, Message, WSEvent } from "../api/client";
 
 // Counter for unique WebSocket message IDs (negative to avoid collision with server IDs)
@@ -7,8 +7,11 @@ let wsMessageIdCounter = -1;
 export function useMessages(sessionId: string | null) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [loading, setLoading] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [hasMore, setHasMore] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
+    const oldestTimestamp = useRef<string | null>(null);
 
     const fetchMessages = useCallback(async () => {
         if (!sessionId) return;
@@ -24,6 +27,12 @@ export function useMessages(sessionId: string | null) {
                 return true;
             });
             setMessages(deduped);
+            // Track oldest timestamp for pagination
+            if (deduped.length > 0) {
+                oldestTimestamp.current = deduped[0].timestamp;
+            }
+            // If we got fewer than 50 messages, there's no more to load
+            setHasMore(deduped.length >= 50);
             setError(null);
         } catch (e) {
             setError(
@@ -33,6 +42,51 @@ export function useMessages(sessionId: string | null) {
             setLoading(false);
         }
     }, [sessionId]);
+
+    const loadMoreMessages = useCallback(async () => {
+        if (!sessionId || loadingMore || !hasMore || !oldestTimestamp.current)
+            return;
+
+        setLoadingMore(true);
+        try {
+            const olderMessages = await api.getMessages(
+                sessionId,
+                50,
+                oldestTimestamp.current,
+            );
+            if (olderMessages.length === 0) {
+                setHasMore(false);
+                return;
+            }
+            // Deduplicate
+            const seen = new Set<number>();
+            const deduped = olderMessages.filter((m: Message) => {
+                if (seen.has(m.id)) return false;
+                seen.add(m.id);
+                return true;
+            });
+            // Update oldest timestamp
+            if (deduped.length > 0) {
+                oldestTimestamp.current = deduped[0].timestamp;
+            }
+            // Prepend older messages
+            setMessages((prev) => {
+                const existingIds = new Set(prev.map((m) => m.id));
+                const newMessages = deduped.filter(
+                    (m) => !existingIds.has(m.id),
+                );
+                return [...newMessages, ...prev];
+            });
+            // If we got fewer than 50, no more to load
+            setHasMore(deduped.length >= 50);
+        } catch (e) {
+            setError(
+                e instanceof Error ? e.message : "Failed to load more messages",
+            );
+        } finally {
+            setLoadingMore(false);
+        }
+    }, [sessionId, loadingMore, hasMore]);
 
     useEffect(() => {
         if (!sessionId || !api.isConfigured()) return;
@@ -128,9 +182,12 @@ export function useMessages(sessionId: string | null) {
     return {
         messages,
         loading,
+        loadingMore,
+        hasMore,
         error,
         sending,
         sendMessage,
+        loadMore: loadMoreMessages,
         refetch: fetchMessages,
     };
 }

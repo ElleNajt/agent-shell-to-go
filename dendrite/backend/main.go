@@ -408,13 +408,28 @@ func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(l, "%d", &limit)
 	}
 
-	rows, err := s.db.Query(`
-		SELECT id, session_id, role, content, timestamp
-		FROM messages
-		WHERE session_id = ?
-		ORDER BY timestamp DESC
-		LIMIT ?
-	`, sessionID, limit)
+	// "before" parameter for pagination - get messages older than this timestamp
+	before := r.URL.Query().Get("before")
+
+	var rows *sql.Rows
+	var err error
+	if before != "" {
+		rows, err = s.db.Query(`
+			SELECT id, session_id, role, content, timestamp
+			FROM messages
+			WHERE session_id = ? AND timestamp < ?
+			ORDER BY timestamp DESC
+			LIMIT ?
+		`, sessionID, before, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, session_id, role, content, timestamp
+			FROM messages
+			WHERE session_id = ?
+			ORDER BY timestamp DESC
+			LIMIT ?
+		`, sessionID, limit)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

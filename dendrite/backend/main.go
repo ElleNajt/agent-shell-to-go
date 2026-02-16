@@ -318,7 +318,7 @@ func (s *Server) handleAgentSpawn(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("error inserting agent: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -342,7 +342,7 @@ func (s *Server) handleAgentClose(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("error closing agent: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -350,10 +350,23 @@ func (s *Server) handleAgentClose(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// validRoles is the set of allowed message role values.
+var validRoles = map[string]bool{
+	"user":  true,
+	"agent": true,
+	"tool":  true,
+}
+
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	var event MessageEvent
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate role
+	if !validRoles[event.Role] {
+		http.Error(w, "invalid role", http.StatusBadRequest)
 		return
 	}
 
@@ -365,7 +378,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("error inserting message: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -400,7 +413,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("error updating agent status: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -484,7 +497,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -561,7 +574,7 @@ func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 		`, sessionID, limit)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -609,7 +622,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	`, sessionID, req.Content, timestamp)
 	if err != nil {
 		log.Printf("error storing user message: %v", err)
-		http.Error(w, "failed to store message", http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -860,9 +873,12 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 	realPath, ok := validatePath(path, validPaths)
 	if !ok {
+		log.Printf("[FILE] access denied: list %q (resolved: %q) from %s", path, realPath, r.RemoteAddr)
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
+
+	log.Printf("[FILE] list %s from %s", realPath, r.RemoteAddr)
 
 	// Read directory
 	entries, err := os.ReadDir(realPath)
@@ -918,9 +934,12 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 
 	realPath, ok := validatePath(path, validPaths)
 	if !ok {
+		log.Printf("[FILE] access denied: read %q (resolved: %q) from %s", path, realPath, r.RemoteAddr)
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
+
+	log.Printf("[FILE] read %s from %s", realPath, r.RemoteAddr)
 
 	// Check file info — use Lstat to not follow symlinks (already resolved above)
 	info, err := os.Stat(realPath)
@@ -1041,7 +1060,7 @@ func (s *Server) handleAliveSessions(w http.ResponseWriter, r *http.Request) {
 	// Get all unclosed sessions from the database
 	rows, err := s.db.Query(`SELECT session_id FROM agents WHERE closed_at IS NULL`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -1136,7 +1155,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	// Return the unique projects we know about from agents
 	rows, err := s.db.Query(`SELECT DISTINCT project FROM agents WHERE closed_at IS NULL ORDER BY project`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -1180,7 +1199,7 @@ func (s *Server) handleDebugSessions(w http.ResponseWriter, r *http.Request) {
 		ORDER BY last_activity DESC
 	`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -1228,7 +1247,7 @@ func (s *Server) handleDebugSendMessage(w http.ResponseWriter, r *http.Request) 
 		VALUES (?, 'user', ?, ?)
 	`, sessionID, content, timestamp)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -1261,7 +1280,7 @@ func (s *Server) handleDebugMessages(w http.ResponseWriter, r *http.Request) {
 		ORDER BY timestamp ASC
 	`, sessionID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()

@@ -977,6 +977,88 @@ func TestSQL_InjectionInMessageContent(t *testing.T) {
 // Various input validation checks.
 // =============================================================================
 
+func TestInput_ValidRolesAccepted(t *testing.T) {
+	s := testServer(t)
+	seedAgent(t, s, "/tmp/test")
+
+	for _, role := range []string{"user", "agent", "tool"} {
+		body := map[string]string{
+			"session_id": "test-session-1",
+			"role":       role,
+			"content":    "test message",
+			"timestamp":  "2025-01-01T00:00:00Z",
+		}
+		req := jsonPost(t, "/events/message", body)
+		w := serveThrough(s, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("role %q should be accepted, got %d", role, w.Code)
+		}
+	}
+}
+
+func TestInput_InvalidRolesRejected(t *testing.T) {
+	s := testServer(t)
+	seedAgent(t, s, "/tmp/test")
+
+	badRoles := []string{"admin", "system", "root", "", "USER", "Agent"}
+
+	for _, role := range badRoles {
+		body := map[string]string{
+			"session_id": "test-session-1",
+			"role":       role,
+			"content":    "test",
+			"timestamp":  "2025-01-01T00:00:00Z",
+		}
+		req := jsonPost(t, "/events/message", body)
+		w := serveThrough(s, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("role %q: expected 400, got %d", role, w.Code)
+		}
+	}
+}
+
+func TestInput_InternalErrorsAreGeneric(t *testing.T) {
+	s := testServer(t)
+	dir := t.TempDir()
+	seedAgent(t, s, dir)
+
+	// Trigger various error paths and verify no internal details leak
+	endpoints := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		// File outside project → "access denied"
+		{"GET", "/files/read?path=/etc/passwd", ""},
+		{"GET", "/files/list?path=/etc", ""},
+	}
+
+	for _, ep := range endpoints {
+		var req *http.Request
+		if ep.body != "" {
+			req = httptest.NewRequest(ep.method, ep.path, strings.NewReader(ep.body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(ep.method, ep.path, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Host = testTailscaleIP + ":8080"
+		w := serveThrough(s, req)
+
+		body := w.Body.String()
+		// Should never contain filesystem paths
+		if strings.Contains(body, "/etc/") || strings.Contains(body, "/Users/") || strings.Contains(body, "/home/") {
+			t.Errorf("%s %s: error response leaks path info: %s", ep.method, ep.path, body)
+		}
+		// Should never contain SQL or database errors
+		if strings.Contains(body, "SQL") || strings.Contains(body, "sqlite") || strings.Contains(body, "database") {
+			t.Errorf("%s %s: error response leaks database info: %s", ep.method, ep.path, body)
+		}
+	}
+}
+
 func TestInput_InvalidJSON(t *testing.T) {
 	s := testServer(t)
 

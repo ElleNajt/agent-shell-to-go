@@ -119,7 +119,10 @@ export function AgentsScreen({
 
     const switchMachine = async (machine: Machine) => {
         setCurrentMachine(machine);
-        api.configure(machine.url);
+        const savedToken = await AsyncStorage.getItem(
+            "agent_shell_backend_token",
+        );
+        api.configure(machine.url, savedToken || undefined);
         api.disconnectWebSocket();
         api.connectWebSocket();
         await AsyncStorage.setItem(

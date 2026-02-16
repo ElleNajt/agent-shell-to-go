@@ -603,8 +603,9 @@ View and interact with agents from the mobile app."
   (agent-shell-to-go-mobile--debug "[WS] Connecting (attempt %d, %d active buffers)"
                                    agent-shell-to-go-mobile--websocket-connect-count
                                    (length agent-shell-to-go-mobile--active-buffers))
-  (let* ((ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
-                         "/ws")))
+  (let* ((token (agent-shell-to-go-mobile--load-token))
+         (ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
+                         "/ws?token=" (url-hexify-string (or token "")))))
     (condition-case err
         (setq agent-shell-to-go-mobile--websocket
               (websocket-open ws-url

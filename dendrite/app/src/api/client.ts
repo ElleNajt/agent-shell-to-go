@@ -61,18 +61,20 @@ export interface FileContent {
 
 class ApiClient {
     private baseUrl: string = "";
+    private token: string = "";
     private ws: WebSocket | null = null;
     private wsListeners: Set<(event: WSEvent) => void> = new Set();
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private reconnectAttempts: number = 0;
     private pingInterval: ReturnType<typeof setInterval> | null = null;
 
-    configure(baseUrl: string) {
+    configure(baseUrl: string, token?: string) {
         this.baseUrl = baseUrl;
+        if (token) this.token = token;
     }
 
     isConfigured(): boolean {
-        return !!this.baseUrl;
+        return !!this.baseUrl && !!this.token;
     }
 
     getBaseUrl(): string {
@@ -86,6 +88,7 @@ class ApiClient {
         const response = await fetch(`${this.baseUrl}${path}`, {
             ...options,
             headers: {
+                Authorization: `Bearer ${this.token}`,
                 "Content-Type": "application/json",
                 ...options.headers,
             },
@@ -224,7 +227,10 @@ class ApiClient {
         }
 
         // Convert http(s) to ws(s)
-        const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/ws";
+        const wsUrl =
+            this.baseUrl.replace(/^http/, "ws") +
+            "/ws?token=" +
+            encodeURIComponent(this.token);
         console.log("WebSocket connecting to:", wsUrl);
 
         this.ws = new WebSocket(wsUrl);

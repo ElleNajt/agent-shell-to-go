@@ -45,11 +45,25 @@ echo "Using config from $CONFIG_FILE"
 # Get listen IP from config or detect it
 TAILSCALE_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || ifconfig | grep "inet 100\." | awk '{print $2}')
 
+# Generate or load API token
+TOKEN_FILE="$CONFIG_DIR/token"
+if [ ! -f "$TOKEN_FILE" ]; then
+    echo "Generating API token..."
+    openssl rand -hex 32 >"$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo "Token saved to $TOKEN_FILE"
+    echo "Configure this token in:"
+    echo "  - Emacs: (setq agent-shell-to-go-mobile-token \"$(cat "$TOKEN_FILE")\")"
+    echo "  - Mobile app: paste into Settings > API Token"
+fi
+AGENT_SHELL_API_TOKEN="$(cat "$TOKEN_FILE")"
+export AGENT_SHELL_API_TOKEN
+
 # Start backend
 echo "Starting backend on $TAILSCALE_IP:8080..."
 cd "$SCRIPT_DIR/dendrite/backend"
 nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c go build -o dendrite-backend main.go
-AGENT_SHELL_API_TOKEN=NOAUTH nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c ./dendrite-backend --listen "$TAILSCALE_IP:8080" &
+nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c ./dendrite-backend --listen "$TAILSCALE_IP:8080" &
 BACKEND_PID=$!
 echo "Backend started (PID: $BACKEND_PID)"
 

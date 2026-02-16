@@ -39,6 +39,10 @@ export default function App() {
 
     const checkExistingConfig = async () => {
         try {
+            const savedToken = await AsyncStorage.getItem(
+                "agent_shell_backend_token",
+            );
+
             // First check build-time config for machines
             if (
                 buildTimeConfig.machines &&
@@ -58,18 +62,25 @@ export default function App() {
                           (m) => m.url === savedUrl,
                       ) || buildTimeConfig.machines[0]
                     : buildTimeConfig.machines[0];
-                api.configure(machine.url);
-                api.connectWebSocket();
-                setScreen("agents");
+                api.configure(machine.url, savedToken || undefined);
+                if (api.isConfigured()) {
+                    api.connectWebSocket();
+                    setScreen("agents");
+                }
                 setLoading(false);
                 return;
             }
 
             // Legacy: single backendUrl
             if (buildTimeConfig.backendUrl) {
-                api.configure(buildTimeConfig.backendUrl);
-                api.connectWebSocket();
-                setScreen("agents");
+                api.configure(
+                    buildTimeConfig.backendUrl,
+                    savedToken || undefined,
+                );
+                if (api.isConfigured()) {
+                    api.connectWebSocket();
+                    setScreen("agents");
+                }
                 setLoading(false);
                 return;
             }
@@ -78,9 +89,11 @@ export default function App() {
             const url = await AsyncStorage.getItem("agent_shell_backend_url");
 
             if (url) {
-                api.configure(url);
-                api.connectWebSocket();
-                setScreen("agents");
+                api.configure(url, savedToken || undefined);
+                if (api.isConfigured()) {
+                    api.connectWebSocket();
+                    setScreen("agents");
+                }
             }
         } catch (e) {
             console.error("Failed to check config:", e);

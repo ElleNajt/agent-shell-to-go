@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -28,6 +29,7 @@ import (
 type Config struct {
 	ListenAddr string // Tailscale IP:port to listen on
 	DBPath     string // Path to SQLite database
+	Token      string // Bearer token for authentication
 }
 
 // Server holds all server state
@@ -44,7 +46,6 @@ type Server struct {
 type wsClient struct {
 	conn       *websocket.Conn
 	writeMutex sync.Mutex
-	authorized bool
 }
 
 // Agent represents an agent session
@@ -260,6 +261,24 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
+		}
+
+		// --- Token authentication ---
+		// Skip auth for health check (monitoring needs unauthenticated access)
+		if r.URL.Path != "/health" {
+			token := ""
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			} else if r.URL.Path == "/ws" {
+				// WebSocket clients (Emacs websocket.el, React Native) can't
+				// reliably set HTTP headers on upgrade, so accept token via query param
+				token = r.URL.Query().Get("token")
+			}
+			if subtle.ConstantTimeCompare([]byte(token), []byte(s.config.Token)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 
 		// Limit request body size to 1MB to prevent OOM from large payloads
@@ -1124,13 +1143,6 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDebugWSStatus(w http.ResponseWriter, r *http.Request) {
 	s.wsMutex.RLock()
 	count := len(s.wsClients)
-	// Count authorized vs unauthorized clients
-	authorized := 0
-	for _, c := range s.wsClients {
-		if c.authorized {
-			authorized++
-		}
-	}
 	s.wsMutex.RUnlock()
 
 	// Get active session count
@@ -1140,7 +1152,6 @@ func (s *Server) handleDebugWSStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"websocket_clients":     count,
-		"authorized_clients":    authorized,
 		"active_agent_sessions": activeCount,
 		"server_time":           time.Now().Format(time.RFC3339),
 	})
@@ -1284,7 +1295,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	remoteAddr := r.RemoteAddr
 	connectedAt := time.Now()
 
-	client := &wsClient{conn: conn, authorized: true}
+	client := &wsClient{conn: conn}
 	s.wsMutex.Lock()
 	s.wsClients[conn] = client
 	clientCount := len(s.wsClients)
@@ -1339,9 +1350,6 @@ func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 	var sendErrors []string
 	var deadClients []*wsClient
 	for _, c := range s.wsClients {
-		if !c.authorized {
-			continue
-		}
 		clientCount++
 		c.writeMutex.Lock()
 		c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -1422,9 +1430,15 @@ func main() {
 		log.Printf("Auto-detected Tailscale IP: %s", ip)
 	}
 
+	token := os.Getenv("AGENT_SHELL_API_TOKEN")
+	if token == "" {
+		log.Fatalf("AGENT_SHELL_API_TOKEN environment variable is required.\nGenerate one with: openssl rand -hex 32")
+	}
+
 	config := Config{
 		ListenAddr: addr,
 		DBPath:     *dbPath,
+		Token:      token,
 	}
 
 	server, err := NewServer(config)

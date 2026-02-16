@@ -128,6 +128,13 @@ func NewServer(config Config) (*Server, error) {
 }
 
 func (s *Server) initDB() error {
+	// WAL mode allows concurrent reads while writing
+	s.db.Exec("PRAGMA journal_mode=WAL")
+	// Wait up to 5s for locks instead of failing immediately with SQLITE_BUSY
+	s.db.Exec("PRAGMA busy_timeout=5000")
+	// Serialize all access through one connection to avoid lock contention
+	s.db.SetMaxOpenConns(1)
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS agents (
 		session_id TEXT PRIMARY KEY,
@@ -1306,6 +1313,7 @@ func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 	clientCount := 0
 	sentCount := 0
 	var sendErrors []string
+	var deadClients []*wsClient
 	for _, c := range s.wsClients {
 		if !c.authorized {
 			continue
@@ -1318,11 +1326,19 @@ func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 		c.writeMutex.Unlock()
 		if err != nil {
 			sendErrors = append(sendErrors, err.Error())
+			deadClients = append(deadClients, c)
 		} else {
 			sentCount++
 		}
 	}
 	s.wsMutex.RUnlock()
+
+	// Close failed connections — this triggers the read goroutine's
+	// deferred cleanup which removes them from wsClients
+	for _, c := range deadClients {
+		log.Printf("[BROADCAST] Closing stale client after write failure")
+		c.conn.Close()
+	}
 
 	// Log broadcast result for important event types
 	switch event.Type {

@@ -176,9 +176,8 @@ func (s *Server) initDB() error {
 }
 
 func (s *Server) setupRoutes() {
-	// CORS middleware
-	s.router.Use(s.corsMiddleware)
-	// Tailscale is the auth layer - no token auth needed
+	// Security middleware (Host check, Content-Type check, body size limit)
+	s.router.Use(s.securityMiddleware)
 
 	// Events from Emacs (POST)
 	s.router.HandleFunc("/events/agent-spawn", s.handleAgentSpawn).Methods("POST")
@@ -226,13 +225,36 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/debug/messages/{session_id}", s.handleDebugMessages).Methods("GET")
 }
 
-func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+func (s *Server) securityMiddleware(next http.Handler) http.Handler {
+	// Extract expected host from listen address for DNS rebinding protection
+	expectedHost, _, _ := net.SplitHostPort(s.config.ListenAddr)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// No CORS headers — the React Native app makes direct HTTP requests
-		// (not browser requests), so CORS is not needed. Omitting
-		// Access-Control-Allow-Origin blocks browser-based cross-origin
-		// requests, preventing malicious websites from probing the backend
-		// via Tailscale IPs.
+		// --- DNS rebinding protection ---
+		// Reject requests where the Host header doesn't match our Tailscale IP.
+		// DNS rebinding attacks serve JS from a domain that later resolves to
+		// our IP; the browser sends Host: attacker.com which we reject.
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host != expectedHost && host != "localhost" && host != "127.0.0.1" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		// --- CSRF protection for state-changing requests ---
+		// Browser form submissions can only send text/plain,
+		// application/x-www-form-urlencoded, or multipart/form-data.
+		// Requiring application/json on POSTs blocks form-based CSRF
+		// since browsers can't set this Content-Type without preflight.
+		if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
+			ct := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(ct, "application/json") {
+				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+				return
+			}
+		}
 
 		// Reject preflight requests (no browser clients expected)
 		if r.Method == "OPTIONS" {
@@ -244,6 +266,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
+
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 
 		next.ServeHTTP(w, r)
 	})

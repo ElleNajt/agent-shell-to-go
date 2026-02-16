@@ -1311,11 +1311,17 @@ func (s *Server) handleDebugMessages(w http.ResponseWriter, r *http.Request) {
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		// Non-browser clients (Emacs websocket.el, React Native) don't send
-		// an Origin header. Browsers always do. Rejecting requests with an
-		// Origin header blocks malicious websites from opening WebSocket
-		// connections to the backend via Tailscale IPs.
-		return r.Header.Get("Origin") == ""
+		origin := r.Header.Get("Origin")
+		// No Origin header: non-browser client (Emacs websocket.el) — allow.
+		if origin == "" {
+			return true
+		}
+		// React Native sets Origin to the WebSocket URL's origin (our own
+		// Tailscale address). Allow if it matches the Host we're serving on.
+		// This still blocks browser cross-origin attacks since the browser's
+		// Origin will be the malicious site, not our Tailscale IP.
+		host := r.Host
+		return origin == "http://"+host || origin == "https://"+host
 	},
 }
 

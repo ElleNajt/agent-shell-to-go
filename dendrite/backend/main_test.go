@@ -365,17 +365,16 @@ func TestCSRF_OptionsRejected(t *testing.T) {
 
 // =============================================================================
 // WEBSOCKET SECURITY
-// The WebSocket upgrader rejects requests with an Origin header, blocking
-// browser-based WebSocket hijacking from malicious websites.
+// The WebSocket upgrader rejects cross-origin requests but allows same-origin
+// (React Native sets Origin to the server's own address) and no-Origin (Emacs).
 // =============================================================================
 
-func TestWebSocket_OriginHeaderRejected(t *testing.T) {
+func TestWebSocket_CrossOriginRejected(t *testing.T) {
 	s := testServer(t)
 
 	evilOrigins := []string{
 		"https://evil.com",
 		"http://evil.com",
-		"http://" + testTailscaleIP, // even same-origin browsers send Origin
 		"null",
 	}
 
@@ -389,17 +388,37 @@ func TestWebSocket_OriginHeaderRejected(t *testing.T) {
 		req.Header.Set("Sec-WebSocket-Key", wsTestKey)
 		w := serveThrough(s, req)
 
-		// The upgrader should reject it — response will be 403 from gorilla/websocket
 		if w.Code == http.StatusSwitchingProtocols {
 			t.Errorf("ATTACK SUCCEEDED: WebSocket with Origin %q was upgraded", origin)
 		}
 	}
 }
 
+func TestWebSocket_SameOriginAccepted(t *testing.T) {
+	s := testServer(t)
+
+	// React Native sets Origin to the WebSocket URL's origin (our Tailscale IP)
+	req := httptest.NewRequest("GET", "/ws?token="+testToken, nil)
+	req.Host = testTailscaleIP + ":8080"
+	req.Header.Set("Origin", "http://"+testTailscaleIP+":8080")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", wsTestKey)
+
+	w := serveThrough(s, req)
+
+	// httptest.NewRecorder doesn't support hijacking, so the upgrade will fail
+	// with a non-auth error. The key check is: NOT 401 and NOT 403.
+	if w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden {
+		t.Errorf("WebSocket with same-origin should pass auth checks, got %d", w.Code)
+	}
+}
+
 func TestWebSocket_NoOriginAccepted(t *testing.T) {
 	s := testServer(t)
 
-	// Non-browser clients don't send Origin
+	// Non-browser clients (Emacs websocket.el) don't send Origin
 	req := httptest.NewRequest("GET", "/ws?token="+testToken, nil)
 	req.Host = testTailscaleIP + ":8080"
 	req.Header.Set("Upgrade", "websocket")
@@ -410,8 +429,6 @@ func TestWebSocket_NoOriginAccepted(t *testing.T) {
 
 	w := serveThrough(s, req)
 
-	// httptest.NewRecorder doesn't support hijacking, so the upgrade will fail
-	// with a non-auth error. The key check is: NOT 401 and NOT 403.
 	if w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden {
 		t.Errorf("WebSocket without Origin should pass auth checks, got %d", w.Code)
 	}
@@ -1241,12 +1258,30 @@ func TestLive_WebSocketWithoutOriginAccepted(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=" + testToken
 
-	// No Origin header — like Emacs websocket.el or React Native
+	// No Origin header — like Emacs websocket.el
 	dialer := websocket.Dialer{}
 
 	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("WebSocket without Origin should connect: %v", err)
+	}
+	conn.Close()
+}
+
+func TestLive_WebSocketSameOriginAccepted(t *testing.T) {
+	ts, _ := liveServer(t)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=" + testToken
+
+	// React Native sets Origin to the server's own address
+	dialer := websocket.Dialer{}
+	header := http.Header{}
+	// ts.URL is like "http://127.0.0.1:PORT", so Origin = ts.URL
+	header.Set("Origin", ts.URL)
+
+	conn, _, err := dialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("WebSocket with same-origin should connect: %v", err)
 	}
 	conn.Close()
 }

@@ -63,6 +63,18 @@ Scan the QR code with Expo Go on your phone.
 - Multi-machine support (switch between different Emacs instances)
 - File browser for project files
 
+### Emacs Setup
+
+```elisp
+(use-package agent-shell-to-go
+  :load-path "~/code/agent-shell-to-go"
+  :after agent-shell
+  :config
+  (setq agent-shell-to-go-mobile-backend-url "http://100.x.x.x:8080")
+  (setq agent-shell-to-go-mobile-token "your-secret-token")
+  (agent-shell-to-go-setup))
+```
+
 ### Multi-Machine Setup
 
 On each machine:
@@ -71,37 +83,13 @@ cd dendrite/backend
 ./start-backend.sh
 ```
 
-In the app, tap the machine name → "Add Machine" → enter the backend URL.
+In the app, tap the machine name -> "Add Machine" -> enter the backend URL.
 
 See [dendrite/README.md](dendrite/README.md) for full documentation.
 
-## Slack Transport (Deprecated)
+## Previous Slack Transport
 
-The Slack transport still works but is no longer actively developed. It mirrors agent-shell conversations to Slack threads.
-
-### Setup
-
-1. Create a Slack app using [`slack-app-manifest.yaml`](slack-app-manifest.yaml)
-2. Configure credentials:
-
-```elisp
-(use-package agent-shell-to-go
-  :load-path "~/code/agent-shell-to-go"
-  :after agent-shell
-  :config
-  (setq agent-shell-to-go-slack-bot-token "xoxb-...")
-  (setq agent-shell-to-go-slack-channel-id "C...")
-  (setq agent-shell-to-go-slack-app-token "xapp-...")
-  (setq agent-shell-to-go-slack-user-id "U...")  ; auto-populates authorized-users
-  
-  (agent-shell-to-go-setup))
-```
-
-Full setup instructions: [slack.org](slack.org)
-
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the pluggable transport system.
+The Slack transport was removed in favor of the mobile app. For the last working Slack version, see commit [`28cc372`](https://github.com/ElleNajt/agent-shell-to-go/tree/28cc372).
 
 ## Related Projects
 

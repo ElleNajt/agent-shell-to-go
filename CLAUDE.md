@@ -1,77 +1,60 @@
 # agent-shell-to-go
 
-Emacs package that mirrors agent-shell conversations to Slack.
+Emacs package that mirrors agent-shell conversations to the Dendrite mobile app.
 
 ## Testing Changes
 
 Reload after editing:
 ```bash
-emacsclient -e '(load-file "/Users/elle/code/agent-shell-to-go/agent-shell-to-go.el")'
+emacsclient -e '(load-file "/Users/elle/code/agent-shell-to-go/agent-shell-to-go-mobile.el")'
 ```
 
 ## Key State
 
 Buffer-local variables (in agent-shell buffers):
-- `agent-shell-to-go--thread-ts` - Slack thread timestamp for this session
-- `agent-shell-to-go--channel-id` - Slack channel ID (may differ per project)
-- `agent-shell-to-go--current-agent-message` - Accumulator for streaming chunks
-- `agent-shell-to-go--from-slack` - Flag to prevent echo when message came from Slack
+- `agent-shell-to-go-mobile--session-id` - Unique session ID for this buffer
+- `agent-shell-to-go-mobile--current-agent-message` - Accumulator for streaming chunks
+- `agent-shell-to-go-mobile--injecting-from-mobile` - Flag to prevent echo
+- `agent-shell-to-go-mobile--pending-permission` - Pending permission request info
 
 Global state:
-- `agent-shell-to-go--active-buffers` - List of buffers with active mirroring
-- `agent-shell-to-go--project-channels` - Hash table: project path -> channel ID
-- `agent-shell-to-go--websocket` - WebSocket connection to Slack
-- `agent-shell-to-go--pending-permissions` - Alist of permission requests awaiting reaction
-
-## Storage Locations
-
-- `~/.agent-shell/slack/` - Hidden message originals (for 🙈 unhide)
-- `~/.agent-shell/slack-truncated/` - Full text of truncated messages (for 👀 expand)
-- Channel mappings saved to `agent-shell-to-go-channels-file`
+- `agent-shell-to-go-mobile--active-buffers` - List of buffers with active mirroring
+- `agent-shell-to-go-mobile--websocket` - WebSocket connection to Go backend
+- `agent-shell-to-go-mobile--websocket-state` - Connection state
 
 ## Debugging
 
-Enable debug logging:
+Debug logs write to `~/.dendrite/debug/logs/dendrite-YYYY-MM-DD.log`.
+
 ```elisp
-(setq agent-shell-to-go-debug t)
+;; Open today's log
+(agent-shell-to-go-mobile-open-log)
+
+;; Show connection status
+(agent-shell-to-go-mobile-debug-status)
+
+;; Test backend connectivity
+(agent-shell-to-go-mobile-test-connection)
 ```
-
-Check `*Messages*` buffer for `agent-shell-to-go:` prefixed logs.
-
-Use `!debug` command in Slack thread to get session info.
-
-Common issues:
-- **Reaction not working**: Check if reaction event shows in `*Messages*`. Slack reaction names don't include colons (e.g., "eyes" not ":eyes:")
-- **Message not expanding**: Check if file exists in `~/.agent-shell/slack-truncated/CHANNEL/TIMESTAMP.txt`
-- **UTF-8 issues**: Uses curl for API requests to handle encoding properly
-- **Thread not found**: `--find-buffer-for-thread` matches on both thread-ts and channel-id
 
 ## Architecture
 
-- `--api-request`: All Slack API calls go through curl (for UTF-8 support)
-- `--send`: Central message sending, handles truncation and storage
-- `--on-notification`: Advice on agent-shell to capture tool calls/responses
-- `--handle-reaction-event`: Dispatches reactions to hide/expand/heart/permission handlers
-- `--inject-message`: Sends Slack messages into agent-shell as if typed locally
+```
+agent-shell (Emacs)
+    │ advice hooks
+    ▼
+agent-shell-to-go-mobile.el
+    │ HTTP POST events
+    │ WebSocket receive
+    ▼
+Go Backend (dendrite/backend/main.go)
+    │ WebSocket broadcast
+    │ SQLite storage
+    ▼
+React Native App (dendrite/app/)
+```
 
-## Three-State Message Expansion
-
-Tool outputs (when `agent-shell-to-go-show-tool-output` is nil) have three states:
-1. **Collapsed** - Just status icon (✅ or ❌)
-2. **Truncated** (👀) - First ~500 chars + "... 📖 for full output"
-3. **Full** (📖) - Complete output up to Slack's ~4k limit
-
-Files stored in `~/.agent-shell/slack-truncated/CHANNEL/`:
-- `TIMESTAMP.txt` - Full output text
-- `TIMESTAMP.txt.collapsed` - Original collapsed form (status icon)
-
-## Reaction Handlers
-
-| Reaction | Function |
-|----------|----------|
-| see_no_evil, no_bell | `--hide-message` (remove to unhide) |
-| eyes | `--expand-message` (truncated ~500 char view, remove to collapse) |
-| book, open_book | `--full-expand-message` (full output, remove to collapse) |
-| heart, heart_eyes, etc. | `--handle-heart-reaction` |
-| bookmark | `--handle-bookmark-reaction` |
-| white_check_mark, +1, unlock, star, x, -1 | Permission responses |
+- `agent-shell-to-go.el` - Entry point, delegates to mobile module
+- `agent-shell-to-go-mobile.el` - All Emacs-side logic (advice, events, WebSocket client)
+- `dendrite/backend/main.go` - Go server (REST API, WebSocket, SQLite)
+- `dendrite/app/` - React Native mobile app

@@ -111,10 +111,10 @@ export function useMessages(sessionId: string | null) {
                 if (event.payload.role === "user") return;
 
                 setMessages((prev) => {
-                    const newMsg = {
+                    const newMsg: Message = {
                         id: wsMessageIdCounter--,
                         session_id: event.payload.session_id,
-                        role: event.payload.role as "user" | "agent" | "tool",
+                        role: event.payload.role,
                         content: event.payload.content,
                         timestamp: event.payload.timestamp,
                     };
@@ -129,10 +129,10 @@ export function useMessages(sessionId: string | null) {
                 event.payload.status === "interrupted"
             ) {
                 setMessages((prev) => {
-                    const systemMsg = {
+                    const systemMsg: Message = {
                         id: wsMessageIdCounter--,
                         session_id: event.payload.session_id,
-                        role: "system" as "user" | "agent" | "tool",
+                        role: "system",
                         content: "--- Interrupted ---",
                         timestamp: event.payload.timestamp,
                     };

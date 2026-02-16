@@ -134,7 +134,7 @@ Plist with :request-id, :options, :tool-call-id.")
 
 (defun agent-shell-to-go-mobile--generate-session-id ()
   "Generate a unique session ID."
-  (format "%s-%s" (buffer-name) (format-time-string "%Y%m%d%H%M%S")))
+  (format "%s-%s" (buffer-name) (format-time-string "%Y%m%d%H%M%S%3N")))
 
 (defun agent-shell-to-go-mobile--iso-timestamp ()
   "Return current time as ISO 8601 timestamp."
@@ -245,7 +245,10 @@ ORIG-FN is the original function, ARGS are its arguments."
           (with-current-buffer buffer
             ;; Only send user message if it wasn't injected from mobile
             ;; (mobile already stored it - echoing back causes duplicates)
-            (unless agent-shell-to-go-mobile--injecting-from-mobile
+            (if agent-shell-to-go-mobile--injecting-from-mobile
+                ;; Clear the flag now that we've consumed it
+                ;; (important for queued messages where the flag persists)
+                (setq agent-shell-to-go-mobile--injecting-from-mobile nil)
               (agent-shell-to-go-mobile--send-message "user" prompt))
             (agent-shell-to-go-mobile--send-status "processing")
             (setq agent-shell-to-go-mobile--current-agent-message nil))))))
@@ -600,9 +603,8 @@ View and interact with agents from the mobile app."
   (agent-shell-to-go-mobile--debug "[WS] Connecting (attempt %d, %d active buffers)"
                                    agent-shell-to-go-mobile--websocket-connect-count
                                    (length agent-shell-to-go-mobile--active-buffers))
-  (let* ((token (agent-shell-to-go-mobile--load-token))
-         (ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
-                         "/ws?token=" (url-hexify-string (or token "")))))
+  (let* ((ws-url (concat (replace-regexp-in-string "^http" "ws" agent-shell-to-go-mobile-backend-url)
+                         "/ws")))
     (condition-case err
         (setq agent-shell-to-go-mobile--websocket
               (websocket-open ws-url
@@ -678,7 +680,9 @@ View and interact with agents from the mobile app."
           ("check_sessions_request"
            (agent-shell-to-go-mobile--handle-check-sessions-request event-payload))
           ("permission_response"
-           (agent-shell-to-go-mobile--handle-permission-response event-payload))))
+           (agent-shell-to-go-mobile--handle-permission-response event-payload))
+          ("big_red_button"
+           (agent-shell-to-go-mobile--handle-big-red-button))))
     (error
      (agent-shell-to-go-mobile--debug "WebSocket message error: %s" err))))
 
@@ -711,20 +715,23 @@ Injects the message into the appropriate agent-shell buffer."
     ;; Set flag to prevent echoing this message back to backend
     ;; (it was already stored when mobile sent it)
     (setq agent-shell-to-go-mobile--injecting-from-mobile t)
-    (unwind-protect
-        (if (shell-maker-busy)
-            ;; Shell is busy - queue the request
-            (progn
-              (agent-shell--enqueue-request :prompt text)
-              (agent-shell-to-go-mobile--debug "Queued message (agent busy): %s" text))
-          ;; Shell is ready - inject immediately
-          (save-excursion
+    (if (shell-maker-busy)
+        ;; Shell is busy - queue the request.
+        ;; Keep the flag set; it will be cleared in --on-send-command
+        ;; after the queued message is picked up.
+        (progn
+          (agent-shell--enqueue-request :prompt text)
+          (agent-shell-to-go-mobile--debug "Queued message (agent busy): %s" text))
+      ;; Shell is ready - inject immediately
+      (unwind-protect
+          (progn
+            (save-excursion
+              (goto-char (point-max))
+              (insert text))
             (goto-char (point-max))
-            (insert text))
-          (goto-char (point-max))
-          (call-interactively #'shell-maker-submit))
-      ;; Clear flag after submit (or on error)
-      (setq agent-shell-to-go-mobile--injecting-from-mobile nil))))
+            (call-interactively #'shell-maker-submit))
+        ;; Clear flag after submit (or on error)
+        (setq agent-shell-to-go-mobile--injecting-from-mobile nil)))))
 
 (defun agent-shell-to-go-mobile--handle-stop-request (payload)
   "Handle a stop_request PAYLOAD from mobile app.
@@ -865,6 +872,16 @@ Sends the permission response back to the ACP client."
                 (agent-shell-to-go-mobile--send-status "processing"))
             (agent-shell-to-go-mobile--debug "No pending permission for session: %s" session-id)))
       (agent-shell-to-go-mobile--debug "No buffer found for permission response: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--handle-big-red-button ()
+  "Handle big_red_button event - interrupt all active agents."
+  (agent-shell-to-go-mobile--debug "BIG RED BUTTON - interrupting all agents")
+  (dolist (buf agent-shell-to-go-mobile--active-buffers)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (fboundp 'agent-shell-interrupt)
+          (ignore-errors (agent-shell-interrupt t))
+          (agent-shell-to-go-mobile--send-status "interrupted"))))))
 
 (defun agent-shell-to-go-mobile--handle-check-sessions-request (_payload)
   "Handle a check_sessions_request from the backend.

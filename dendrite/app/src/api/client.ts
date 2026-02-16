@@ -64,6 +64,7 @@ class ApiClient {
     private ws: WebSocket | null = null;
     private wsListeners: Set<(event: WSEvent) => void> = new Set();
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private reconnectAttempts: number = 0;
     private pingInterval: ReturnType<typeof setInterval> | null = null;
 
     configure(baseUrl: string) {
@@ -85,7 +86,6 @@ class ApiClient {
         const response = await fetch(`${this.baseUrl}${path}`, {
             ...options,
             headers: {
-                Authorization: "Bearer NOAUTH",
                 "Content-Type": "application/json",
                 ...options.headers,
             },
@@ -224,7 +224,7 @@ class ApiClient {
         }
 
         // Convert http(s) to ws(s)
-        const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/ws?token=NOAUTH";
+        const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/ws";
         console.log("WebSocket connecting to:", wsUrl);
 
         this.ws = new WebSocket(wsUrl);
@@ -232,6 +232,7 @@ class ApiClient {
         this.ws.onopen = () => {
             console.log("WebSocket connected to:", wsUrl);
 
+            this.reconnectAttempts = 0;
             if (this.reconnectTimer) {
                 clearTimeout(this.reconnectTimer);
                 this.reconnectTimer = null;
@@ -269,9 +270,15 @@ class ApiClient {
             );
             this.ws = null;
             if (!this.reconnectTimer) {
+                // Exponential backoff: 2s, 4s, 8s, 16s, max 60s
+                const delay = Math.min(
+                    60000,
+                    2000 * Math.pow(2, this.reconnectAttempts),
+                );
+                this.reconnectAttempts++;
                 this.reconnectTimer = setTimeout(
                     () => this.connectWebSocket(),
-                    5000,
+                    delay,
                 );
             }
         };

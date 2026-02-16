@@ -35,8 +35,16 @@ type Server struct {
 	config    Config
 	db        *sql.DB
 	router    *mux.Router
-	wsClients map[*websocket.Conn]bool
+	wsClients map[*websocket.Conn]*wsClient
 	wsMutex   sync.RWMutex
+}
+
+// wsClient wraps a WebSocket connection with a write mutex
+// to prevent concurrent writes (gorilla/websocket is not safe for concurrent writes)
+type wsClient struct {
+	conn       *websocket.Conn
+	writeMutex sync.Mutex
+	authorized bool
 }
 
 // Agent represents an agent session
@@ -108,7 +116,7 @@ func NewServer(config Config) (*Server, error) {
 		config:    config,
 		db:        db,
 		router:    mux.NewRouter(),
-		wsClients: make(map[*websocket.Conn]bool),
+		wsClients: make(map[*websocket.Conn]*wsClient),
 	}
 
 	if err := s.initDB(); err != nil {
@@ -172,28 +180,28 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/events/status", s.handleStatus).Methods("POST")
 	s.router.HandleFunc("/events/custom", s.handleCustomEvent).Methods("POST")
 
-	// API for mobile app (GET/POST) - include OPTIONS for CORS preflight
-	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/messages", s.handleGetMessages).Methods("GET", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/restart", s.handleRestartAgent).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/agents/{session_id}/permission", s.handlePermissionResponse).Methods("POST", "OPTIONS")
+	// API for mobile app (GET/POST)
+	s.router.HandleFunc("/agents", s.handleGetAgents).Methods("GET")
+	s.router.HandleFunc("/agents/{session_id}/messages", s.handleGetMessages).Methods("GET")
+	s.router.HandleFunc("/agents/{session_id}/send", s.handleSendMessage).Methods("POST")
+	s.router.HandleFunc("/agents/{session_id}/stop", s.handleStopAgent).Methods("POST")
+	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST")
+	s.router.HandleFunc("/agents/{session_id}/restart", s.handleRestartAgent).Methods("POST")
+	s.router.HandleFunc("/agents/{session_id}/permission", s.handlePermissionResponse).Methods("POST")
 
 	// Actions for spawning new agents
-	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/actions/new-dispatcher", s.handleNewDispatcher).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/actions/projects", s.handleListProjects).Methods("GET", "OPTIONS")
-	s.router.HandleFunc("/actions/big-red-button", s.handleBigRedButton).Methods("POST", "OPTIONS")
-	s.router.HandleFunc("/actions/prune-sessions", s.handlePruneSessions).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST")
+	s.router.HandleFunc("/actions/new-dispatcher", s.handleNewDispatcher).Methods("POST")
+	s.router.HandleFunc("/actions/projects", s.handleListProjects).Methods("GET")
+	s.router.HandleFunc("/actions/big-red-button", s.handleBigRedButton).Methods("POST")
+	s.router.HandleFunc("/actions/prune-sessions", s.handlePruneSessions).Methods("POST")
 
 	// Events from Emacs for session management
-	s.router.HandleFunc("/events/alive-sessions", s.handleAliveSessions).Methods("POST", "OPTIONS")
+	s.router.HandleFunc("/events/alive-sessions", s.handleAliveSessions).Methods("POST")
 
 	// File explorer
-	s.router.HandleFunc("/files/list", s.handleListFiles).Methods("GET", "OPTIONS")
-	s.router.HandleFunc("/files/read", s.handleReadFile).Methods("GET", "OPTIONS")
+	s.router.HandleFunc("/files/list", s.handleListFiles).Methods("GET")
+	s.router.HandleFunc("/files/read", s.handleReadFile).Methods("GET")
 
 	// WebSocket for real-time updates
 	s.router.HandleFunc("/ws", s.handleWebSocket)
@@ -207,21 +215,27 @@ func (s *Server) setupRoutes() {
 	// Debug endpoints
 	s.router.HandleFunc("/debug/ws-status", s.handleDebugWSStatus).Methods("GET")
 	s.router.HandleFunc("/debug/sessions", s.handleDebugSessions).Methods("GET")
-	s.router.HandleFunc("/debug/send-message", s.handleDebugSendMessage).Methods("POST", "GET")
+	s.router.HandleFunc("/debug/send-message", s.handleDebugSendMessage).Methods("POST")
 	s.router.HandleFunc("/debug/messages/{session_id}", s.handleDebugMessages).Methods("GET")
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow requests from any origin (for local development)
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		// No CORS headers — the React Native app makes direct HTTP requests
+		// (not browser requests), so CORS is not needed. Omitting
+		// Access-Control-Allow-Origin blocks browser-based cross-origin
+		// requests, preventing malicious websites from probing the backend
+		// via Tailscale IPs.
 
-		// Handle preflight requests
+		// Reject preflight requests (no browser clients expected)
 		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
+		}
+
+		// Limit request body size to 1MB to prevent OOM from large payloads
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
 
 		next.ServeHTTP(w, r)
@@ -466,6 +480,9 @@ func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
 		fmt.Sscanf(l, "%d", &limit)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 50
 	}
 
 	// "before" parameter for pagination - get messages older than this timestamp
@@ -748,10 +765,13 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Canonicalize path to prevent traversal (e.g., /../../../etc/passwd)
+	path = filepath.Clean(path)
+
 	// Check if the requested path is within a valid project
 	isValid := false
 	for _, vp := range validPaths {
-		if strings.HasPrefix(path, vp) {
+		if strings.HasPrefix(path, filepath.Clean(vp)) {
 			isValid = true
 			break
 		}
@@ -823,9 +843,12 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Canonicalize path to prevent traversal
+	path = filepath.Clean(path)
+
 	isValid := false
 	for _, vp := range validPaths {
-		if strings.HasPrefix(path, vp) {
+		if strings.HasPrefix(path, filepath.Clean(vp)) {
 			isValid = true
 			break
 		}
@@ -946,8 +969,8 @@ func (s *Server) handleAliveSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Build a set of alive session IDs for fast lookup
 	aliveSet := make(map[string]bool)
-	for _, s := range req.Sessions {
-		aliveSet[s.SessionID] = true
+	for _, sess := range req.Sessions {
+		aliveSet[sess.SessionID] = true
 	}
 
 	// Get all unclosed sessions from the database
@@ -1072,8 +1095,8 @@ func (s *Server) handleDebugWSStatus(w http.ResponseWriter, r *http.Request) {
 	count := len(s.wsClients)
 	// Count authorized vs unauthorized clients
 	authorized := 0
-	for _, auth := range s.wsClients {
-		if auth {
+	for _, c := range s.wsClients {
+		if c.authorized {
 			authorized++
 		}
 	}
@@ -1123,11 +1146,19 @@ func (s *Server) handleDebugSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDebugSendMessage(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session_id")
-	content := r.URL.Query().Get("content")
+	var req struct {
+		SessionID string `json:"session_id"`
+		Content   string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "JSON body with session_id and content required", http.StatusBadRequest)
+		return
+	}
+	sessionID := req.SessionID
+	content := req.Content
 
 	if sessionID == "" || content == "" {
-		http.Error(w, "session_id and content query params required", http.StatusBadRequest)
+		http.Error(w, "session_id and content required", http.StatusBadRequest)
 		return
 	}
 
@@ -1218,8 +1249,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	remoteAddr := r.RemoteAddr
 	connectedAt := time.Now()
 
+	client := &wsClient{conn: conn, authorized: true}
 	s.wsMutex.Lock()
-	s.wsClients[conn] = true
+	s.wsClients[conn] = client
 	clientCount := len(s.wsClients)
 	s.wsMutex.Unlock()
 
@@ -1270,12 +1302,14 @@ func (s *Server) broadcastWithRetry(event WSEvent, attempt int) {
 	clientCount := 0
 	sentCount := 0
 	var sendErrors []string
-	for conn, authorized := range s.wsClients {
-		if !authorized {
+	for _, c := range s.wsClients {
+		if !c.authorized {
 			continue
 		}
 		clientCount++
-		err := conn.WriteMessage(websocket.TextMessage, data)
+		c.writeMutex.Lock()
+		err := c.conn.WriteMessage(websocket.TextMessage, data)
+		c.writeMutex.Unlock()
 		if err != nil {
 			sendErrors = append(sendErrors, err.Error())
 		} else {

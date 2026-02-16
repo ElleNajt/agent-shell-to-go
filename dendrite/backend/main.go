@@ -56,6 +56,7 @@ type Agent struct {
 	ProjectPath     string     `json:"project_path"`
 	ParentSessionID *string    `json:"parent_session_id"`
 	Status          string     `json:"status"`
+	ModeID          string     `json:"mode_id"`
 	LastMessage     string     `json:"last_message"`
 	LastMessageRole string     `json:"last_message_role"`
 	LastActivity    time.Time  `json:"last_activity"`
@@ -172,6 +173,8 @@ func (s *Server) initDB() error {
 
 	// Migration: add project_path column if it doesn't exist
 	_, _ = s.db.Exec(`ALTER TABLE agents ADD COLUMN project_path TEXT DEFAULT ''`)
+	// Migration: add mode_id column if it doesn't exist
+	_, _ = s.db.Exec(`ALTER TABLE agents ADD COLUMN mode_id TEXT DEFAULT 'default'`)
 
 	return nil
 }
@@ -195,6 +198,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/agents/{session_id}/close", s.handleCloseAgent).Methods("POST")
 	s.router.HandleFunc("/agents/{session_id}/restart", s.handleRestartAgent).Methods("POST")
 	s.router.HandleFunc("/agents/{session_id}/permission", s.handlePermissionResponse).Methods("POST")
+	s.router.HandleFunc("/agents/{session_id}/mode", s.handleSetMode).Methods("POST")
 
 	// Actions for spawning new agents
 	s.router.HandleFunc("/actions/new-agent", s.handleNewAgent).Methods("POST")
@@ -435,6 +439,17 @@ func (s *Server) handleCustomEvent(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Custom event: type=%s session=%s", event.EventType, event.SessionID)
 
+	// If this is a mode_change event, update the DB
+	if event.EventType == "mode_change" {
+		var modePayload struct {
+			ModeID string `json:"mode_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &modePayload); err == nil && modePayload.ModeID != "" {
+			_, _ = s.db.Exec(`UPDATE agents SET mode_id = ?, last_activity = ? WHERE session_id = ?`,
+				modePayload.ModeID, time.Now().Format(time.RFC3339), event.SessionID)
+		}
+	}
+
 	// Broadcast to mobile clients
 	s.broadcast(WSEvent{
 		Type: event.EventType,
@@ -479,6 +494,44 @@ func (s *Server) handlePermissionResponse(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusOK)
 }
 
+var validModes = map[string]bool{
+	"default":           true,
+	"acceptEdits":       true,
+	"plan":              true,
+	"bypassPermissions": true,
+}
+
+func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["session_id"]
+
+	var req struct {
+		ModeID string `json:"mode_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !validModes[req.ModeID] {
+		http.Error(w, "invalid mode_id", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Set mode request: session=%s mode=%s", sessionID, req.ModeID)
+
+	// Broadcast to Emacs so it can call ACP set_mode
+	s.broadcast(WSEvent{
+		Type: "set_mode_request",
+		Payload: map[string]string{
+			"session_id": sessionID,
+			"mode_id":    req.ModeID,
+		},
+	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // API handlers (for mobile app)
 
 func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +540,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT session_id, buffer_name, project, project_path, parent_session_id, 
-		       status, last_message, last_message_role, last_activity, created_at, closed_at
+		       status, COALESCE(mode_id, 'default'), last_message, last_message_role, last_activity, created_at, closed_at
 		FROM agents
 	`
 	if !showClosed {
@@ -510,7 +563,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		var closedAt sql.NullTime
 
 		err := rows.Scan(&a.SessionID, &a.BufferName, &a.Project, &projectPath, &parentID,
-			&a.Status, &lastMsg, &lastMsgRole, &a.LastActivity, &a.CreatedAt, &closedAt)
+			&a.Status, &a.ModeID, &lastMsg, &lastMsgRole, &a.LastActivity, &a.CreatedAt, &closedAt)
 		if err != nil {
 			log.Printf("error scanning agent: %v", err)
 			continue

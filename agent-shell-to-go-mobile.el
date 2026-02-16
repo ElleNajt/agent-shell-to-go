@@ -67,6 +67,9 @@ Alternative to setting `agent-shell-to-go-mobile-token' directly."
 (defvar-local agent-shell-to-go-mobile--session-id nil
   "Unique session ID for this buffer.")
 
+(defvar-local agent-shell-to-go-mobile--last-mode-id nil
+  "Last known session mode ID, used to detect mode changes.")
+
 (defvar-local agent-shell-to-go-mobile--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
@@ -358,6 +361,17 @@ ORIG-FN is the original function, ARGS are its arguments."
     (agent-shell-to-go-mobile--send-status "ready"))
   (apply orig-fn args))
 
+(defun agent-shell-to-go-mobile--on-mode-line-update (&rest _args)
+  "After-advice for agent-shell--update-header-and-mode-line.
+Detects mode changes and sends them to the mobile backend."
+  (when (and (bound-and-true-p agent-shell-to-go-mobile-mode)
+             (bound-and-true-p agent-shell--state))
+    (let ((current-mode (map-nested-elt agent-shell--state '(:session :mode-id))))
+      (when (and current-mode
+                 (not (equal current-mode agent-shell-to-go-mobile--last-mode-id)))
+        (setq agent-shell-to-go-mobile--last-mode-id current-mode)
+        (agent-shell-to-go-mobile--send-mode-change current-mode)))))
+
 (defun agent-shell-to-go-mobile--on-request (orig-fn &rest args)
   "Advice for agent-shell--on-request. Send permission request to mobile.
 ORIG-FN is the original function, ARGS are its arguments."
@@ -460,6 +474,7 @@ ORIG-FN is the original function, ARGS are its arguments."
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go-mobile--on-request)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go-mobile--on-heartbeat-stop)
   (advice-add 'agent-shell--subscribe-to-client-events :around #'agent-shell-to-go-mobile--on-subscribe-to-client-events)
+  (advice-add 'agent-shell--update-header-and-mode-line :after #'agent-shell-to-go-mobile--on-mode-line-update)
   
   ;; Add kill-buffer hook
   (add-hook 'kill-buffer-hook #'agent-shell-to-go-mobile--on-buffer-kill nil t)
@@ -499,6 +514,7 @@ ORIG-FN is the original function, ARGS are its arguments."
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go-mobile--on-request)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go-mobile--on-heartbeat-stop)
     (advice-remove 'agent-shell--subscribe-to-client-events #'agent-shell-to-go-mobile--on-subscribe-to-client-events)
+    (advice-remove 'agent-shell--update-header-and-mode-line #'agent-shell-to-go-mobile--on-mode-line-update)
     (agent-shell-to-go-mobile--websocket-disconnect))
   
   (agent-shell-to-go-mobile--debug "disabled"))
@@ -685,6 +701,8 @@ View and interact with agents from the mobile app."
            (agent-shell-to-go-mobile--handle-check-sessions-request event-payload))
           ("permission_response"
            (agent-shell-to-go-mobile--handle-permission-response event-payload))
+          ("set_mode_request"
+           (agent-shell-to-go-mobile--handle-set-mode-request event-payload))
           ("big_red_button"
            (agent-shell-to-go-mobile--handle-big-red-button))))
     (error
@@ -876,6 +894,43 @@ Sends the permission response back to the ACP client."
                 (agent-shell-to-go-mobile--send-status "processing"))
             (agent-shell-to-go-mobile--debug "No pending permission for session: %s" session-id)))
       (agent-shell-to-go-mobile--debug "No buffer found for permission response: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--handle-set-mode-request (payload)
+  "Handle a set_mode_request PAYLOAD from mobile app.
+Calls ACP to change the session mode."
+  (let* ((session-id (alist-get 'session_id payload))
+         (mode-id (alist-get 'mode_id payload))
+         (buffer (agent-shell-to-go-mobile--find-buffer-by-session-id session-id)))
+    (if buffer
+        (with-current-buffer buffer
+          (let* ((state agent-shell--state)
+                 (client (alist-get :client state))
+                 (acp-session-id (map-nested-elt state '(:session :id))))
+            (if (and client acp-session-id)
+                (progn
+                  (agent-shell-to-go-mobile--debug "Set mode: session=%s mode=%s" session-id mode-id)
+                  (acp-send-request
+                   :client client
+                   :request (acp-make-session-set-mode-request
+                             :session-id acp-session-id
+                             :mode-id mode-id)
+                   :buffer (current-buffer)
+                   :on-success (lambda (_response)
+                                 (let ((updated-session (map-elt (agent-shell--state) :session)))
+                                   (map-put! updated-session :mode-id mode-id)
+                                   (map-put! (agent-shell--state) :session updated-session))
+                                 (agent-shell--update-header-and-mode-line)
+                                 (agent-shell-to-go-mobile--send-mode-change mode-id))
+                   :on-failure (lambda (error _raw-message)
+                                 (agent-shell-to-go-mobile--debug "Failed to set mode: %s" error))))
+              (agent-shell-to-go-mobile--debug "No ACP client/session for mode change: %s" session-id))))
+      (agent-shell-to-go-mobile--debug "No buffer found for set mode: %s" session-id))))
+
+(defun agent-shell-to-go-mobile--send-mode-change (mode-id)
+  "Send a mode_change event to the backend with MODE-ID."
+  (agent-shell-to-go-mobile--send-event
+   "mode_change"
+   `((mode_id . ,mode-id))))
 
 (defun agent-shell-to-go-mobile--handle-big-red-button ()
   "Handle big_red_button event - interrupt all active agents."

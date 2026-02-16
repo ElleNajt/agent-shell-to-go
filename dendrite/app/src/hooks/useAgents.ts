@@ -42,6 +42,7 @@ export function useAgents() {
                                 parent_session_id:
                                     event.payload.parent_session_id,
                                 status: "ready",
+                                mode_id: event.payload.mode_id || "default",
                                 last_message: "",
                                 last_message_role: "agent",
                                 last_activity: event.payload.timestamp,
@@ -84,6 +85,23 @@ export function useAgents() {
                                 ...a,
                                 status: event.payload.status,
                                 last_activity: event.payload.timestamp,
+                            };
+                        }),
+                    );
+                    break;
+
+                case "mode_change":
+                    setAgents((prev) =>
+                        prev.map((a) => {
+                            if (a.session_id !== event.payload.session_id)
+                                return a;
+                            const modePayload =
+                                typeof event.payload.payload === "string"
+                                    ? JSON.parse(event.payload.payload)
+                                    : event.payload.payload;
+                            return {
+                                ...a,
+                                mode_id: modePayload.mode_id || a.mode_id,
                             };
                         }),
                     );

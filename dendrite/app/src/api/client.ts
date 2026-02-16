@@ -7,6 +7,7 @@ export interface Agent {
     project_path: string;
     parent_session_id: string | null;
     status: "ready" | "processing" | "permission_required" | "closed";
+    mode_id: "default" | "acceptEdits" | "plan" | "bypassPermissions";
     last_message: string;
     last_message_role: "user" | "agent" | "tool";
     last_activity: string;
@@ -30,7 +31,8 @@ export interface WSEvent {
         | "message"
         | "status"
         | "send_request"
-        | "permission_request";
+        | "permission_request"
+        | "mode_change";
     payload: any;
 }
 
@@ -154,6 +156,13 @@ class ApiClient {
                 body: JSON.stringify({ option_id: optionId }),
             },
         );
+    }
+
+    async setMode(sessionId: string, modeId: string): Promise<void> {
+        await this.request(`/agents/${encodeURIComponent(sessionId)}/mode`, {
+            method: "POST",
+            body: JSON.stringify({ mode_id: modeId }),
+        });
     }
 
     async restartAgent(

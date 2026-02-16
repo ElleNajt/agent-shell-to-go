@@ -46,15 +46,53 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
     const [isProcessing, setIsProcessing] = useState(
         agent.status === "processing",
     );
+    const [currentMode, setCurrentMode] = useState(agent.mode_id || "default");
 
-    // Listen for status changes
+    const MODE_CYCLE: Array<
+        "default" | "acceptEdits" | "plan" | "bypassPermissions"
+    > = ["default", "acceptEdits", "plan", "bypassPermissions"];
+
+    const MODE_LABELS: Record<string, string> = {
+        default: "Ask",
+        acceptEdits: "Edits",
+        plan: "Plan",
+        bypassPermissions: "YOLO",
+    };
+
+    const MODE_COLORS: Record<string, string> = {
+        default: "#888888",
+        acceptEdits: "#4CAF50",
+        plan: "#FF9800",
+        bypassPermissions: "#F44336",
+    };
+
+    const cycleMode = async () => {
+        const idx = MODE_CYCLE.indexOf(currentMode as any);
+        const nextMode = MODE_CYCLE[(idx + 1) % MODE_CYCLE.length];
+        setCurrentMode(nextMode); // optimistic
+        try {
+            await api.setMode(agent.session_id, nextMode);
+        } catch (e) {
+            setCurrentMode(currentMode); // revert
+            Alert.alert("Error", "Failed to change mode");
+        }
+    };
+
+    // Listen for status and mode changes
     useEffect(() => {
         const unsubscribe = api.subscribe((event: WSEvent) => {
-            if (
-                event.type === "status" &&
-                event.payload.session_id === agent.session_id
-            ) {
+            if (event.payload.session_id !== agent.session_id) return;
+            if (event.type === "status") {
                 setIsProcessing(event.payload.status === "processing");
+            }
+            if (event.type === "mode_change") {
+                const modePayload =
+                    typeof event.payload.payload === "string"
+                        ? JSON.parse(event.payload.payload)
+                        : event.payload.payload;
+                if (modePayload.mode_id) {
+                    setCurrentMode(modePayload.mode_id);
+                }
             }
         });
         return () => unsubscribe();
@@ -404,7 +442,33 @@ export function ChatScreen({ agent, onBack }: ChatScreenProps) {
                     <Text style={styles.headerTitle} numberOfLines={1}>
                         {agent.buffer_name.split(" @ ")[0]}
                     </Text>
-                    <Text style={styles.headerSubtitle}>{agent.project}</Text>
+                    <View style={styles.headerSubRow}>
+                        <Text style={styles.headerSubtitle}>
+                            {agent.project}
+                        </Text>
+                        <TouchableOpacity
+                            onPress={cycleMode}
+                            style={[
+                                styles.modeButton,
+                                {
+                                    borderColor:
+                                        MODE_COLORS[currentMode] || "#888",
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.modeButtonText,
+                                    {
+                                        color:
+                                            MODE_COLORS[currentMode] || "#888",
+                                    },
+                                ]}
+                            >
+                                {MODE_LABELS[currentMode] || currentMode}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
                 <View style={styles.headerActions}>
                     <TouchableOpacity
@@ -699,6 +763,22 @@ const styles = StyleSheet.create({
     },
     headerInfo: {
         flex: 1,
+    },
+    headerSubRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginTop: 2,
+    },
+    modeButton: {
+        borderWidth: 1,
+        borderRadius: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 1,
+    },
+    modeButtonText: {
+        fontSize: 10,
+        fontWeight: "600",
     },
     headerTitle: {
         color: "#FFFFFF",

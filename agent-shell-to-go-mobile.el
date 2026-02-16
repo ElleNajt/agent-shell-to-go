@@ -382,8 +382,8 @@ ORIG-FN is the original function, ARGS are its arguments."
                ;; Convert options to simpler format for mobile
                (mobile-options
                 (mapcar (lambda (opt)
-                          (list (cons 'id (alist-get 'id opt))
-                                (cons 'label (alist-get 'label opt))
+                          (list (cons 'id (alist-get 'optionId opt))
+                                (cons 'label (alist-get 'name opt))
                                 (cons 'kind (alist-get 'kind opt))))
                         options)))
           ;; Store pending permission info

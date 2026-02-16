@@ -1,0 +1,4 @@
+[[allowlists]]
+description = "RFC 6455 example WebSocket key (the sample nonce, base64-encoded)"
+regexTarget = "match"
+regexes = ['''dGhlIHNhbXBsZSBub25jZQ==''']

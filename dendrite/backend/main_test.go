@@ -62,13 +62,10 @@ func seedAgent(t *testing.T, s *Server, projectPath string) {
 const testToken = "test-token-abcdef1234567890"
 const testTailscaleIP = "100.100.100.100"
 
-// wsTestKey generates the base64-encoded nonce used in WebSocket test requests.
-// This is the standard RFC 6455 example value ("the sample nonce" in base64).
-// Computed at runtime to avoid false positives from secret scanners.
-var wsTestKey = func() string {
-	// "the sample nonce" → base64
-	return "dGhlIHNhbXBs" + "ZSBub25jZQ=="
-}()
+// wsTestKey is the base64 nonce from RFC 6455 examples ("the sample nonce"),
+// used in WebSocket upgrade test requests. Not a secret.
+// Allowlisted in .gitleaks.toml.
+const wsTestKey = "dGhlIHNhbXBsZSBub25jZQ=="
 
 // jsonPost creates a POST request with JSON body and valid auth token.
 func jsonPost(t *testing.T, path string, body interface{}) *http.Request {

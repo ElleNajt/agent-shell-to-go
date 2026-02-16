@@ -43,7 +43,7 @@ Can also be set via AGENT_SHELL_MOBILE_TOKEN environment variable."
   :type 'string
   :group 'agent-shell-to-go-mobile)
 
-(defcustom agent-shell-to-go-mobile-token-file nil
+(defcustom agent-shell-to-go-mobile-token-file "~/.dendrite/token"
   "Path to file containing the mobile backend token.
 Alternative to setting `agent-shell-to-go-mobile-token' directly."
   :type 'string
@@ -109,13 +109,16 @@ Plist with :request-id, :options, :tool-call-id.")
 
 (defun agent-shell-to-go-mobile--load-token ()
   "Load the auth token from various sources."
-  (or agent-shell-to-go-mobile-token
-      (and agent-shell-to-go-mobile-token-file
-           (file-exists-p agent-shell-to-go-mobile-token-file)
-           (with-temp-buffer
-             (insert-file-contents agent-shell-to-go-mobile-token-file)
-             (string-trim (buffer-string))))
-      (getenv "AGENT_SHELL_MOBILE_TOKEN")))
+  (let ((var-token (and agent-shell-to-go-mobile-token
+                        (not (string= agent-shell-to-go-mobile-token "NOAUTH"))
+                        (not (string-empty-p agent-shell-to-go-mobile-token))
+                        agent-shell-to-go-mobile-token))
+        (file-token (and agent-shell-to-go-mobile-token-file
+                         (file-exists-p (expand-file-name agent-shell-to-go-mobile-token-file))
+                         (with-temp-buffer
+                           (insert-file-contents (expand-file-name agent-shell-to-go-mobile-token-file))
+                           (string-trim (buffer-string))))))
+    (or var-token file-token (getenv "AGENT_SHELL_MOBILE_TOKEN"))))
 
 (defun agent-shell-to-go-mobile--get-project-path ()
   "Get the project path for the current buffer."
@@ -983,10 +986,21 @@ Call this after both agent-shell-to-go-mobile and meta-agent-shell are loaded."
 (defun agent-shell-to-go-mobile-start-backend ()
   "Start the dendrite backend process. Builds if binary is missing."
   (interactive)
+  (message "start-backend: called (interactive=%s)" (called-interactively-p 'any))
+  ;; Cancel any pending restart timer to prevent duplicate restarts
+  (when agent-shell-to-go-mobile--backend-restart-timer
+    (cancel-timer agent-shell-to-go-mobile--backend-restart-timer)
+    (setq agent-shell-to-go-mobile--backend-restart-timer nil))
   (when (get-process "dendrite-backend")
+    (message "start-backend: killing existing process")
     (delete-process "dendrite-backend"))
-  (let ((default-directory agent-shell-to-go-mobile-backend-dir)
-        (binary (expand-file-name "dendrite-backend" agent-shell-to-go-mobile-backend-dir)))
+  (let* ((default-directory agent-shell-to-go-mobile-backend-dir)
+         (binary (expand-file-name "dendrite-backend" agent-shell-to-go-mobile-backend-dir))
+         (token (agent-shell-to-go-mobile--load-token))
+         (process-environment
+          (if token
+              (cons (format "AGENT_SHELL_API_TOKEN=%s" token) process-environment)
+            process-environment)))
     (unless (file-exists-p binary)
       (message "dendrite-backend: building...")
       (shell-command "go build -o dendrite-backend ."))

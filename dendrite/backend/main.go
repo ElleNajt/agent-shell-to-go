@@ -231,6 +231,11 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 	expectedHost, _, _ := net.SplitHostPort(s.config.ListenAddr)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Security headers on every response, including errors
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+
 		// --- DNS rebinding protection ---
 		// Reject requests where the Host header doesn't match our Tailscale IP.
 		// DNS rebinding attacks serve JS from a domain that later resolves to
@@ -285,8 +290,6 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
-
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 
 		next.ServeHTTP(w, r)
 	})
@@ -791,6 +794,57 @@ func (s *Server) handleNewDispatcher(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "spawning"})
 }
 
+// validatePath checks that path is within one of the valid project directories.
+// It resolves symlinks and uses separator-aware boundary checking to prevent
+// both symlink escape and prefix-matching bugs (/projects matching /projects-secret).
+func validatePath(path string, validPaths []string) (string, bool) {
+	// Canonicalize to remove ../ traversal
+	path = filepath.Clean(path)
+
+	// Resolve symlinks to get the real path
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// Path doesn't exist or can't be resolved
+		return path, false
+	}
+
+	for _, vp := range validPaths {
+		vpClean := filepath.Clean(vp)
+		// Resolve symlinks in the valid path too
+		vpReal, err := filepath.EvalSymlinks(vpClean)
+		if err != nil {
+			continue
+		}
+		// Exact match
+		if realPath == vpReal {
+			return realPath, true
+		}
+		// Separator-aware prefix check: ensure the path is actually inside
+		// the directory, not just sharing a prefix (e.g., /projects vs /projects-secret)
+		if strings.HasPrefix(realPath, vpReal+string(os.PathSeparator)) {
+			return realPath, true
+		}
+	}
+	return realPath, false
+}
+
+func (s *Server) getValidProjectPaths() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT project_path FROM agents WHERE closed_at IS NULL AND project_path != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err == nil {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
+}
+
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -798,43 +852,22 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security: only allow listing within known project directories
-	// Get the list of valid project paths from the database
-	rows, err := s.db.Query(`SELECT DISTINCT project_path FROM agents WHERE closed_at IS NULL AND project_path != ''`)
+	validPaths, err := s.getValidProjectPaths()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
 
-	var validPaths []string
-	for rows.Next() {
-		var projectPath string
-		if err := rows.Scan(&projectPath); err == nil {
-			validPaths = append(validPaths, projectPath)
-		}
-	}
-
-	// Canonicalize path to prevent traversal (e.g., /../../../etc/passwd)
-	path = filepath.Clean(path)
-
-	// Check if the requested path is within a valid project
-	isValid := false
-	for _, vp := range validPaths {
-		if strings.HasPrefix(path, filepath.Clean(vp)) {
-			isValid = true
-			break
-		}
-	}
-	if !isValid {
-		http.Error(w, "path not within a known project", http.StatusForbidden)
+	realPath, ok := validatePath(path, validPaths)
+	if !ok {
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
 	// Read directory
-	entries, err := os.ReadDir(path)
+	entries, err := os.ReadDir(realPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -867,7 +900,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"files": files, "path": path})
+	json.NewEncoder(w).Encode(map[string]interface{}{"files": files, "path": realPath})
 }
 
 func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
@@ -877,41 +910,22 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security: only allow reading within known project directories
-	rows, err := s.db.Query(`SELECT DISTINCT project_path FROM agents WHERE closed_at IS NULL AND project_path != ''`)
+	validPaths, err := s.getValidProjectPaths()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var validPaths []string
-	for rows.Next() {
-		var projectPath string
-		if err := rows.Scan(&projectPath); err == nil {
-			validPaths = append(validPaths, projectPath)
-		}
-	}
-
-	// Canonicalize path to prevent traversal
-	path = filepath.Clean(path)
-
-	isValid := false
-	for _, vp := range validPaths {
-		if strings.HasPrefix(path, filepath.Clean(vp)) {
-			isValid = true
-			break
-		}
-	}
-	if !isValid {
-		http.Error(w, "path not within a known project", http.StatusForbidden)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	// Check file info
-	info, err := os.Stat(path)
+	realPath, ok := validatePath(path, validPaths)
+	if !ok {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	// Check file info — use Lstat to not follow symlinks (already resolved above)
+	info, err := os.Stat(realPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -921,7 +935,7 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine content type
-	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(realPath), "."))
 	isImage := ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "webp" || ext == "svg"
 	isText := ext == "txt" || ext == "md" || ext == "org" || ext == "el" || ext == "py" || ext == "js" ||
 		ext == "ts" || ext == "tsx" || ext == "jsx" || ext == "go" || ext == "rs" || ext == "json" ||
@@ -936,13 +950,14 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if info.Size() > maxSize {
+		log.Printf("file too large: %s (%d bytes)", realPath, info.Size())
 		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(realPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
 
@@ -958,14 +973,14 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 			"type":    "image",
 			"content": encoded,
 			"mime":    contentType,
-			"path":    path,
+			"path":    realPath,
 		})
 	} else if isText {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"type":    "text",
 			"content": string(data),
-			"path":    path,
+			"path":    realPath,
 		})
 	} else {
 		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)

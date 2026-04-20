@@ -352,6 +352,45 @@ Each entry: (slack-msg-ts . (:request-id id :buffer buffer :options options))")
     ("-1" . reject))
   "Map Slack reaction names to permission actions.")
 
+(defconst agent-shell-to-go--emoji-aliases
+  '(("✅" . "white_check_mark")
+    ("👍" . "+1")
+    ("🔓" . "unlock")
+    ("⭐" . "star")
+    ("❌" . "x")
+    ("👎" . "-1"))
+  "Unicode emoji to Slack reaction name aliases.
+Used so that users who type a rendered emoji into Slack (instead of
+adding it as a reaction) still resolve a pending permission.")
+
+(defvar agent-shell-to-go--resolved-permissions (make-hash-table :test 'equal)
+  "Hash table of permission request IDs that have been resolved.
+Keys are ACP request ids, values are timestamps (for TTL cleanup).
+Populated by the :before advice on `agent-shell--send-permission-response'
+so that the on-request advice can avoid posting a Slack prompt when the
+local `agent-shell-permission-responder-function' already auto-approved.")
+
+(defun agent-shell-to-go--mark-permission-resolved (request-id)
+  "Mark REQUEST-ID as resolved and prune entries older than 5 minutes."
+  (when request-id
+    (puthash request-id (float-time) agent-shell-to-go--resolved-permissions)
+    (let ((now (float-time)))
+      (maphash (lambda (k v)
+                 (when (> (- now v) 300)
+                   (remhash k agent-shell-to-go--resolved-permissions)))
+               agent-shell-to-go--resolved-permissions))))
+
+(defun agent-shell-to-go--text-to-reaction-name (text)
+  "If TEXT is a single permission emoji, return its Slack reaction name.
+Accepts either `:name:' form or a rendered unicode emoji.  Returns nil
+for anything else."
+  (let ((trimmed (string-trim (or text ""))))
+    (cond
+     ((and (> (length trimmed) 2)
+           (string-match-p "\\`:[a-z0-9_+-]+:\\'" trimmed))
+      (substring trimmed 1 -1))
+     ((cdr (assoc trimmed agent-shell-to-go--emoji-aliases))))))
+
 (defconst agent-shell-to-go--hide-reactions
   '("no_bell" "see_no_evil")
   "Reactions that trigger hiding a message.")
@@ -1060,12 +1099,15 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
       ;; Mark as processed before handling
       (puthash msg-ts (float-time) agent-shell-to-go--processed-message-ts)
       (with-current-buffer buffer
-        (if (string-prefix-p "!" text)
-            (progn
-              (agent-shell-to-go--debug "handling command: %s" text)
-              (agent-shell-to-go--handle-command text buffer thread-ts))
+        (cond
+         ((agent-shell-to-go--try-resolve-permission-text buffer text)
+          (agent-shell-to-go--debug "resolved pending permission via typed emoji: %s" text))
+         ((string-prefix-p "!" text)
+          (agent-shell-to-go--debug "handling command: %s" text)
+          (agent-shell-to-go--handle-command text buffer thread-ts))
+         (t
           (agent-shell-to-go--debug "received from Slack: %s" text)
-          (agent-shell-to-go--inject-message text))))))
+          (agent-shell-to-go--inject-message text)))))))
 
 (defun agent-shell-to-go--hidden-message-path (channel ts)
   "Return the file path for storing hidden message content.
@@ -1424,6 +1466,7 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
     (when pending
       (let* ((info (cdr pending))
              (request-id (plist-get info :request-id))
+             (tool-call-id (plist-get info :tool-call-id))
              (buffer (plist-get info :buffer))
              (options (plist-get info :options))
              (action (alist-get reaction agent-shell-to-go--reaction-map nil nil #'string=)))
@@ -1436,10 +1479,8 @@ Authorization is checked upstream in `agent-shell-to-go--handle-event'."
                    :client (alist-get :client state)
                    :request-id request-id
                    :option-id option-id
-                   :state state)))
-              ;; Remove from pending
-              (setq agent-shell-to-go--pending-permissions
-                    (assq-delete-all msg-ts agent-shell-to-go--pending-permissions)))))))))
+                   :tool-call-id tool-call-id
+                   :state state))))))))))
 
 (defun agent-shell-to-go--start-agent-in-folder (folder &optional use-container)
   "Start a new agent in FOLDER. If USE-CONTAINER is non-nil, pass prefix arg."
@@ -1632,8 +1673,13 @@ If nil, just creates the directory and starts the agent immediately."
 ;;; Advice functions to hook into agent-shell
 
 (defun agent-shell-to-go--on-request (orig-fn &rest args)
-  "Advice for agent-shell--on-request. Notify on permission requests.
-ORIG-FN is the original function, ARGS are its arguments."
+  "Advice for agent-shell--on-request.  Notify on permission requests.
+ORIG-FN is the original function, ARGS are its arguments.
+
+Calls ORIG-FN first so that `agent-shell-permission-responder-function'
+has a chance to auto-resolve the request.  Only posts to Slack when the
+request is still outstanding after ORIG-FN returns."
+  (apply orig-fn args)
   (let* ((state (plist-get args :state))
          (request (plist-get args :acp-request))
          (method (alist-get 'method request))
@@ -1646,10 +1692,12 @@ ORIG-FN is the original function, ARGS are its arguments."
              (params (alist-get 'params request))
              (options (alist-get 'options params))
              (tool-call (alist-get 'toolCall params))
+             (tool-call-id (alist-get 'toolCallId tool-call))
              (title (alist-get 'title tool-call))
              (raw-input (alist-get 'rawInput tool-call))
              (command (and raw-input (alist-get 'command raw-input))))
-        (when thread-ts
+        (when (and thread-ts
+                   (not (gethash request-id agent-shell-to-go--resolved-permissions)))
           (condition-case err
               (let* ((response (agent-shell-to-go--send
                                 (format ":warning: *Permission Required*\n`%s`\n\nReact: :white_check_mark: Allow | :unlock: Always | :x: Reject"
@@ -1659,12 +1707,26 @@ ORIG-FN is the original function, ARGS are its arguments."
                 (when msg-ts
                   (push (cons msg-ts
                               (list :request-id request-id
+                                    :tool-call-id tool-call-id
                                     :buffer buffer
                                     :options options
                                     :command (or command title "Unknown")))
                         agent-shell-to-go--pending-permissions)))
-            (error (message "agent-shell-to-go permission notify error: %s" err)))))))
-  (apply orig-fn args))
+            (error (message "agent-shell-to-go permission notify error: %s" err))))))))
+
+(defun agent-shell-to-go--before-send-permission-response (&rest args)
+  "Before-advice for `agent-shell--send-permission-response'.
+Marks ARGS' :request-id as resolved and drops any matching entry from
+`agent-shell-to-go--pending-permissions', so that whichever side responds
+first — Emacs UI, user's responder-function, or Slack reaction — the
+other side stops accepting a second (duplicate) response."
+  (let ((request-id (plist-get args :request-id)))
+    (when request-id
+      (agent-shell-to-go--mark-permission-resolved request-id)
+      (setq agent-shell-to-go--pending-permissions
+            (cl-delete-if (lambda (entry)
+                            (equal (plist-get (cdr entry) :request-id) request-id))
+                          agent-shell-to-go--pending-permissions)))))
 
 (defun agent-shell-to-go--on-send-command (orig-fn &rest args)
   "Advice for agent-shell--send-command. Send user prompt to Slack.
@@ -1890,6 +1952,34 @@ ORIG-FN is the original function, ARGS are its arguments."
                     ('reject (member kind '("deny" "reject" "reject_once"))))
              return id)))
 
+(defun agent-shell-to-go--try-resolve-permission-text (buffer text)
+  "Resolve a pending permission for BUFFER if TEXT is a permission emoji.
+Returns non-nil when TEXT was consumed as a permission response, so the
+caller should not forward it to the agent as a new prompt.
+
+This is a fallback for users who type :white_check_mark: (or paste the
+rendered emoji) as a message instead of adding it as a reaction."
+  (when-let* ((reaction (agent-shell-to-go--text-to-reaction-name text))
+              (action (alist-get reaction agent-shell-to-go--reaction-map
+                                 nil nil #'string=))
+              (entry (cl-find-if
+                      (lambda (e)
+                        (eq (plist-get (cdr e) :buffer) buffer))
+                      agent-shell-to-go--pending-permissions))
+              (info (cdr entry))
+              (options (plist-get info :options))
+              (option-id (agent-shell-to-go--find-option-id options action)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((state agent-shell--state))
+          (agent-shell--send-permission-response
+           :client (alist-get :client state)
+           :request-id (plist-get info :request-id)
+           :option-id option-id
+           :tool-call-id (plist-get info :tool-call-id)
+           :state state)))
+      t)))
+
 (defun agent-shell-to-go--set-mode (buffer mode-id thread-ts mode-name emoji)
   "Set MODE-ID in BUFFER, notify THREAD-TS with MODE-NAME and EMOJI."
   (with-current-buffer buffer
@@ -2103,6 +2193,8 @@ If the shell is busy, queue the message for later processing."
   (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
   (advice-add 'agent-shell--on-notification :around #'agent-shell-to-go--on-notification)
   (advice-add 'agent-shell--on-request :around #'agent-shell-to-go--on-request)
+  (advice-add 'agent-shell--send-permission-response :before
+              #'agent-shell-to-go--before-send-permission-response)
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
   (advice-add 'agent-shell--initialize-client :after #'agent-shell-to-go--on-client-initialized)
 
@@ -2161,6 +2253,8 @@ If the shell is busy, queue the message for later processing."
     (advice-remove 'agent-shell--send-command #'agent-shell-to-go--on-send-command)
     (advice-remove 'agent-shell--on-notification #'agent-shell-to-go--on-notification)
     (advice-remove 'agent-shell--on-request #'agent-shell-to-go--on-request)
+    (advice-remove 'agent-shell--send-permission-response
+                   #'agent-shell-to-go--before-send-permission-response)
     (advice-remove 'agent-shell-heartbeat-stop #'agent-shell-to-go--on-heartbeat-stop)
     (advice-remove 'agent-shell--initialize-client #'agent-shell-to-go--on-client-initialized))
 

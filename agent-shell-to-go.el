@@ -287,11 +287,8 @@ Returns the channel ID."
 (defvar-local agent-shell-to-go--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
-(defvar-local agent-shell-to-go--thread-title-updated nil
-  "Non-nil if the thread header has been updated with a session title.")
-
-(defvar-local agent-shell-to-go--turn-complete-subscription nil
-  "Subscription token for the turn-complete event, used to fetch session title.")
+(defvar-local agent-shell-to-go--session-title-changed-subscription nil
+  "Subscription token for agent-shell's `session-title-changed' event.")
 
 (defvar-local agent-shell-to-go--file-watcher nil
   "Process for fswatch watching image files in this buffer's project.")
@@ -657,9 +654,9 @@ If TRUNCATE is non-nil, truncate long messages and store full text for 👀 expa
 
 (defun agent-shell-to-go--update-thread-header (title)
   "Update the Slack thread header with TITLE.
-Uses chat.update to modify the original thread message."
-  (when (and agent-shell-to-go--thread-ts
-             (not agent-shell-to-go--thread-title-updated))
+Uses chat.update to modify the original thread message. Safe to call
+on every title change; chat.update is idempotent."
+  (when agent-shell-to-go--thread-ts
     (let* ((channel (or agent-shell-to-go--channel-id
                         agent-shell-to-go-channel-id))
            (truncated-title (if (> (length title) 80)
@@ -676,48 +673,20 @@ Uses chat.update to modify the original thread message."
       (condition-case err
           (progn
             (agent-shell-to-go--api-request "POST" "chat.update" data)
-            (setq agent-shell-to-go--thread-title-updated t)
             (agent-shell-to-go--debug "updated thread header: %s" truncated-title))
         (error
          (agent-shell-to-go--debug "failed to update thread header: %s" err))))))
 
-(defun agent-shell-to-go--fetch-session-title ()
-  "Fetch session title from opencode via session/list and update thread header.
-Sends an ACP session/list request, finds the current session by ID,
-and updates the Slack thread header with the session title.
-Only acts on the first turn-complete when the title has not been updated yet."
-  (when (and (not agent-shell-to-go--thread-title-updated)
-             agent-shell-to-go--thread-ts
-             (boundp 'agent-shell--state)
-             agent-shell--state)
-    (let* ((session-id (map-nested-elt agent-shell--state '(:session :id)))
-           (client (map-elt agent-shell--state :client))
-           (cwd (agent-shell--resolve-path default-directory)))
-      (when (and session-id client cwd)
-        (agent-shell-to-go--debug "fetching session title for %s" session-id)
-        (acp-send-request
-         :client client
-         :request (acp-make-session-list-request :cwd cwd)
-         :buffer (current-buffer)
-         :on-success (lambda (acp-response)
-                       (let* ((sessions (append (or (map-elt acp-response 'sessions) '()) nil))
-                              (current (seq-find
-                                        (lambda (s)
-                                          (equal (map-elt s 'sessionId) session-id))
-                                        sessions))
-                              (title (and current (map-elt current 'title))))
-                         (if (and title (not (string-empty-p title)))
-                             (progn
-                               (agent-shell-to-go--update-thread-header title)
-                               (agent-shell-to-go--debug "session title from opencode: %s" title)
-                               ;; Unsubscribe - we got the title, no need to check again
-                               (when agent-shell-to-go--turn-complete-subscription
-                                 (agent-shell-unsubscribe
-                                  :subscription agent-shell-to-go--turn-complete-subscription)
-                                 (setq agent-shell-to-go--turn-complete-subscription nil)))
-                           (agent-shell-to-go--debug "no session title yet, will retry on next turn"))))
-         :on-failure (lambda (_err _raw)
-                       (agent-shell-to-go--debug "failed to fetch session list for title")))))))
+(defun agent-shell-to-go--on-session-title-changed (event)
+  "Handler for agent-shell's `session-title-changed' event.
+Pushes the new title to the Slack thread header. agent-shell now owns
+the per-session title (seeded from the first user prompt and refined
+from `session/list' for agents that supply one), so this handler
+just consumes the value."
+  (when-let* ((data (map-elt event :data))
+              (title (map-elt data :title)))
+    (when (and (stringp title) (not (string-empty-p title)))
+      (agent-shell-to-go--update-thread-header title))))
 
 ;;; Message formatting
 
@@ -2106,13 +2075,17 @@ If the shell is busy, queue the message for later processing."
   (advice-add 'agent-shell-heartbeat-stop :around #'agent-shell-to-go--on-heartbeat-stop)
   (advice-add 'agent-shell--initialize-client :after #'agent-shell-to-go--on-client-initialized)
 
-  ;; Subscribe to turn-complete to fetch session title from opencode
-  (setq agent-shell-to-go--turn-complete-subscription
+  ;; Subscribe to agent-shell's session-title-changed event so the Slack
+  ;; thread header reflects whatever title agent-shell currently has.
+  (setq agent-shell-to-go--session-title-changed-subscription
         (agent-shell-subscribe-to
          :shell-buffer (current-buffer)
-         :event 'turn-complete
-         :on-event (lambda (_event)
-                     (agent-shell-to-go--fetch-session-title))))
+         :event 'session-title-changed
+         :on-event #'agent-shell-to-go--on-session-title-changed))
+  ;; If a title was already set before this buffer subscribed (e.g.
+  ;; resumed session), push it to Slack now.
+  (when-let ((title (map-nested-elt agent-shell--state '(:session :title))))
+    (agent-shell-to-go--update-thread-header title))
 
   ;; Start file watcher for auto-uploading images
   (agent-shell-to-go--start-file-watcher)
@@ -2135,10 +2108,11 @@ If the shell is busy, queue the message for later processing."
   ;; Stop file watcher
   (agent-shell-to-go--stop-file-watcher)
 
-  ;; Unsubscribe from turn-complete event
-  (when agent-shell-to-go--turn-complete-subscription
-    (agent-shell-unsubscribe :subscription agent-shell-to-go--turn-complete-subscription)
-    (setq agent-shell-to-go--turn-complete-subscription nil))
+  ;; Unsubscribe from session-title-changed event
+  (when agent-shell-to-go--session-title-changed-subscription
+    (agent-shell-unsubscribe
+     :subscription agent-shell-to-go--session-title-changed-subscription)
+    (setq agent-shell-to-go--session-title-changed-subscription nil))
 
   (when agent-shell-to-go--thread-ts
     (when (and agent-shell-to-go-upload-transcript-on-end

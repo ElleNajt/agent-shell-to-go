@@ -32,8 +32,10 @@
 
 ; custom variables 
 
-(defcustom agent-shell-to-go-start-agent-function #'agent-shell
+(defcustom agent-shell-to-go-start-agent-function #'agent-shell-new-shell
   "Function to call to start a new agent-shell.
+The default uses `agent-shell-new-shell' which always forces creation of a
+new shell rather than reusing an existing one or toggling.
 Override if you have a custom starter function."
   :type 'function
   :group 'agent-shell-to-go)

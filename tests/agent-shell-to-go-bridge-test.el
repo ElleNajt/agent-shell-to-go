@@ -112,6 +112,11 @@ Pumps process output each iteration.  Returns truthy on success, nil on timeout.
   (mapcar
    (lambda (c) (nth 3 c)) (agent-shell-to-go-test-outbound-calls transport 'send-text)))
 
+(defun agent-shell-to-go-test-bridge--edited-texts (transport)
+  "Return all text payloads edited via TRANSPORT in call order."
+  (mapcar
+   (lambda (c) (nth 3 c)) (agent-shell-to-go-test-outbound-calls transport 'edit-message)))
+
 (defun agent-shell-to-go-test-bridge--wait-for-ready (transport &optional timeout)
   "Wait until TRANSPORT has received a Ready signal from the bridge.
 Returns non-nil on success, nil on timeout."
@@ -260,7 +265,7 @@ normal session-ID wait would time out."
 ;;; tool-call-update branching
 
 (ert-deftest agent-shell-to-go-test-bridge-tool-call-output-shown ()
-  "With show-tool-output t, completed tool call forwards full text output."
+  "With show-tool-output t, completed tool call edits the start message with full text output."
   (let ((agent-shell-to-go-show-tool-output t))
     (agent-shell-to-go-test-bridge--with-session tr buf
       (agent-shell-to-go-test-bridge--send-prompt buf "test tool_call_read")
@@ -268,42 +273,44 @@ normal session-ID wait would time out."
       (should
        (cl-some
         (lambda (text) (string-match-p "File read successfully" text))
-        (agent-shell-to-go-test-bridge--sent-texts tr))))))
+        (agent-shell-to-go-test-bridge--edited-texts tr))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-tool-call-output-hidden ()
-  "With show-tool-output nil, completed tool call sends only the [ok] icon."
+  "With show-tool-output nil, completed tool call edits the start message with icon and title."
   (let ((agent-shell-to-go-show-tool-output nil))
     (agent-shell-to-go-test-bridge--with-session tr buf
       (agent-shell-to-go-test-bridge--send-prompt buf "test tool_call_read")
       (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+      (let ((sent (agent-shell-to-go-test-bridge--sent-texts tr))
+            (edited (agent-shell-to-go-test-bridge--edited-texts tr)))
         (should-not
-         (cl-some (lambda (text) (string-match-p "File read successfully" text)) texts))
-        (should (cl-some (lambda (text) (equal text "[ok]")) texts))))))
+         (cl-some (lambda (text) (string-match-p "File read successfully" text)) sent))
+        (should (cl-some (lambda (text) (string-match-p "completed" text)) edited))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-tool-call-diff-shown ()
-  "With show-tool-output t, diff content uses transport-format-diff not plain text."
+  "With show-tool-output t, start message shows diff and completion edits the start message."
   (let ((agent-shell-to-go-show-tool-output t))
     (agent-shell-to-go-test-bridge--with-session tr buf
       (agent-shell-to-go-test-bridge--send-prompt buf "test tool_call_diff")
       (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
       (should
        (cl-some
-        (lambda (text)
-          (string-match-p "diff omitted in test transport" text))
-        (agent-shell-to-go-test-bridge--sent-texts tr))))))
+        (lambda (text) (string-match-p "diff omitted in test transport" text))
+        (agent-shell-to-go-test-bridge--sent-texts tr)))
+      (should (agent-shell-to-go-test-outbound-calls tr 'edit-message)))))
 
 (ert-deftest agent-shell-to-go-test-bridge-tool-call-diff-hidden ()
-  "With show-tool-output nil, diff content sends only the [ok] icon."
+  "With show-tool-output nil, completion edits the start message with icon and title."
   (let ((agent-shell-to-go-show-tool-output nil))
     (agent-shell-to-go-test-bridge--with-session tr buf
       (agent-shell-to-go-test-bridge--send-prompt buf "test tool_call_diff")
       (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+      (let ((sent (agent-shell-to-go-test-bridge--sent-texts tr))
+            (edited (agent-shell-to-go-test-bridge--edited-texts tr)))
         (should-not
          (cl-some
-          (lambda (text) (string-match-p "diff omitted in test transport" text)) texts))
-        (should (cl-some (lambda (text) (equal text "[ok]")) texts))))))
+          (lambda (text) (string-match-p "diff omitted in test transport" text)) sent))
+        (should (cl-some (lambda (text) (string-match-p "completed" text)) edited))))))
 
 ;;; permission responder + reaction
 

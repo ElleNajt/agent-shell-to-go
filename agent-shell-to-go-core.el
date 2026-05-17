@@ -102,7 +102,16 @@ Default is 7 days."
   :type 'number
   :group 'agent-shell-to-go)
 
-; Shared utilities 
+(defcustom agent-shell-to-go-tool-call-icons
+  '((start     . "🛠️")
+    (completed . "✅")
+    (failed    . "❌"))
+  "Alist mapping tool-call status symbols to emoji strings.
+Keys: `start' (shown while running), `completed', `failed'."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'agent-shell-to-go)
+
+; Shared utilities
 
 (defconst agent-shell-to-go--debug-buffer-name "*agent-shell-to-go-debug*"
   "Name of the buffer used for debug logging.")

@@ -697,15 +697,18 @@ Options plist supports :truncate :ephemeral :user-id."
 
 (cl-defmethod agent-shell-to-go-transport-format-tool-call-start
     ((transport agent-shell-to-go-slack-transport) title)
-  (format ":hourglass: `%s`" title))
+  (format "%s `%s`" (alist-get 'start agent-shell-to-go-tool-call-icons) title))
 
 (cl-defmethod agent-shell-to-go-transport-format-tool-call-result
     ((transport agent-shell-to-go-slack-transport) title status output)
   (let ((icon
-         (pcase status
-           ('completed ":white_check_mark:")
-           ('failed ":x:")
-           (_ ":wrench:"))))
+         (cond
+           ((or (equal status "completed") (eq status 'completed))
+            (alist-get 'completed agent-shell-to-go-tool-call-icons))
+           ((or (equal status "failed") (eq status 'failed))
+            (alist-get 'failed    agent-shell-to-go-tool-call-icons))
+           (t
+            (alist-get 'start     agent-shell-to-go-tool-call-icons)))))
     (if (and output (stringp output) (not (string-empty-p output)))
         (format "%s `%s`\n```\n%s\n```" icon title output)
       (format "%s `%s`" icon title))))

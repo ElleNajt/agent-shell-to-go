@@ -40,7 +40,7 @@
 ;;
 ;;   agent-shell-to-go-transport-format-tool-call-result
 ;;     - format-tool-call-result-completed: includes tool name and output in a code block
-;;     - format-tool-call-result-failed: includes the :x: emoji
+;;     - format-tool-call-result-failed: includes the failed icon
 ;;     - format-tool-call-result-no-output: nil output omits the code block
 ;;
 ;;   agent-shell-to-go-transport-format-diff
@@ -328,7 +328,7 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
          (s
           (agent-shell-to-go-transport-format-tool-call-result
            tr "bash" 'failed "err")))
-    (should (string-match-p ":x:" s))
+    (should (string-match-p "❌" s))
     (should (string-match-p "err" s))))
 
 (ert-deftest agent-shell-to-go-test-discord-format-tool-call-result-no-output ()

@@ -384,6 +384,7 @@ Options plist supports :truncate."
           (agent-shell-to-go--discord-api
            "PATCH" (format "/channels/%s/messages/%s" channel-id message-id)
            `((content . ,safe)))))
+    (agent-shell-to-go--debug "edit-message: msg=%s resp=%s" message-id (json-encode resp))
     (map-elt resp 'id)))
 
 (cl-defmethod agent-shell-to-go-transport-upload-file
@@ -527,15 +528,18 @@ CHANNEL-ID must be a forum channel; LABEL becomes the post title."
 
 (cl-defmethod agent-shell-to-go-transport-format-tool-call-start
     ((transport agent-shell-to-go-discord-transport) title)
-  (format ":hourglass: `%s`" title))
+  (format "%s `%s`" (alist-get 'start agent-shell-to-go-tool-call-icons) title))
 
 (cl-defmethod agent-shell-to-go-transport-format-tool-call-result
     ((transport agent-shell-to-go-discord-transport) title status output)
   (let ((icon
-         (pcase status
-           ('completed ":white_check_mark:")
-           ('failed ":x:")
-           (_ ":tools:"))))
+         (cond
+           ((or (equal status "completed") (eq status 'completed))
+            (alist-get 'completed agent-shell-to-go-tool-call-icons))
+           ((or (equal status "failed") (eq status 'failed))
+            (alist-get 'failed    agent-shell-to-go-tool-call-icons))
+           (t
+            (alist-get 'start     agent-shell-to-go-tool-call-icons)))))
     (if (and output (stringp output) (not (string-empty-p output)))
         (format "%s `%s`\n```\n%s\n```" icon title output)
       (format "%s `%s`" icon title))))

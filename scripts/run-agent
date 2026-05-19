@@ -22,9 +22,11 @@ if [ -f "$CONFIG_FILE" ]; then
     CONFIG_LOAD=(-l "$CONFIG_FILE")
 fi
 
+DAEMON_NAME="agent-shell-to-go-$$"
+
 # Each --eval is processed in order: config file is loaded first via -l,
 # then env vars override it, then setup runs with the final values.
-exec emacs -Q \
+emacs --daemon="$DAEMON_NAME" -Q \
     -L "$DEPS_DIR/shell-maker" \
     -L "$DEPS_DIR/acp" \
     -L "$DEPS_DIR/agent-shell" \
@@ -45,5 +47,11 @@ exec emacs -Q \
     --eval "(when-let* ((v (getenv \"DEFAULT_TRANSPORT\")))      (setq agent-shell-to-go-default-transport (intern v)))" \
     --eval "(when-let* ((v (getenv \"AGENT_PREFERRED_CONFIG\"))) (setq agent-shell-preferred-agent-config (intern v)))" \
     --eval "(agent-shell-to-go-setup)" \
-    --eval "(setq enable-local-variables :all)" \
+    --eval "(setq enable-local-variables :all)"
+
+while ! emacsclient -s "$DAEMON_NAME" --eval t &>/dev/null 2>&1; do
+    sleep 0.1
+done
+
+exec emacsclient -s "$DAEMON_NAME" \
     --eval "(let ((default-directory \"$PROJ_PATH\")) (agent-shell-new-shell))"

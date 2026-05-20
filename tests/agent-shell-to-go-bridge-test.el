@@ -25,7 +25,7 @@
 ;;   agent-shell-to-go--on-turn-complete
 ;;     - agent-message-forwarded: agent message forwarding on turn end
 ;;     - agent-message-multiple-chunks-forwarded: multiple chunks accumulated into one send
-;;     - remote-message-not-echoed: remote-injected messages produce no echo or Processing line
+;;     - remote-message-not-echoed: remote-injected messages produce no echo or spinner verb from --on-send-command
 ;;   agent-shell-to-go--bridge-on-tool-call-update
 ;;     - tool-call-forwarded: tool call forwarding (generic)
 ;;     - tool-call-output-shown: show-tool-output t: full text output
@@ -116,7 +116,8 @@ Pumps process output each iteration.  Returns truthy on success, nil on timeout.
 (defun agent-shell-to-go-test-bridge--edited-texts (transport)
   "Return all text payloads edited via TRANSPORT in call order."
   (mapcar
-   (lambda (c) (nth 3 c)) (agent-shell-to-go-test-outbound-calls transport 'edit-message)))
+   (lambda (c) (nth 3 c))
+   (agent-shell-to-go-test-outbound-calls transport 'edit-message)))
 
 (defun agent-shell-to-go-test-bridge--wait-for-ready (transport &optional timeout)
   "Wait until TRANSPORT has received a Ready signal from the bridge.
@@ -220,13 +221,16 @@ normal session-ID wait would time out."
 ;;; Tests
 
 (ert-deftest agent-shell-to-go-test-bridge-user-message-echoed ()
-  "The user prompt is echoed to the transport before the agent replies."
-  (agent-shell-to-go-test-bridge--with-session tr buf
-    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
-    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-    (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
-      (should (cl-some (lambda (t) (string-match-p "test agent_message" t)) texts))
-      (should (cl-some (lambda (t) (string-match-p "Processing" t)) texts)))))
+  "The user prompt is echoed and followed by a spinner verb before the agent replies.
+`agent-shell-to-go-spinner-verbs' is pinned to a single deterministic
+verb so the assertion is exact."
+  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
+    (agent-shell-to-go-test-bridge--with-session tr buf
+      (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
+      (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+        (should (cl-some (lambda (s) (string-match-p "test agent_message" s)) texts))
+        (should (cl-some (lambda (s) (string-match-p "Tinkering..." s)) texts))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-agent-message-forwarded ()
   "Agent message chunks are accumulated and forwarded to the transport on turn-complete."
@@ -296,7 +300,8 @@ normal session-ID wait would time out."
       (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
       (should
        (cl-some
-        (lambda (text) (string-match-p "diff omitted in test transport" text))
+        (lambda (text)
+          (string-match-p "diff omitted in test transport" text))
         (agent-shell-to-go-test-bridge--sent-texts tr)))
       (should (agent-shell-to-go-test-outbound-calls tr 'edit-message)))))
 
@@ -374,21 +379,80 @@ normal session-ID wait would time out."
 ;;; inbound hook handling
 
 (ert-deftest agent-shell-to-go-test-bridge-remote-message-not-echoed ()
-  "Messages injected from the transport do not produce a [user] echo or Processing line.
-Exercises the `agent-shell-to-go--remote-queued' suppression in
-`agent-shell-to-go--on-send-command'."
+  "Remote-injected messages produce no [user] echo or spinner verb from `--on-send-command'.
+Exercises the `agent-shell-to-go--remote-queued' suppression: for a
+single remote prompt, init-finished is on its first fire so it sends
+`_Connected_' rather than a spinner verb, and `--on-send-command'
+takes the dequeue branch and sends nothing.  `Tinkering' from the
+pinned `agent-shell-to-go-spinner-verbs' must therefore be absent."
+  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
+    (agent-shell-to-go-test-bridge--with-session tr buf
+      (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
+            (channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf)))
+        (agent-shell-to-go-test-inbound-message
+         tr channel-id thread-id "testuser" "test agent_message")
+        (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+        (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+          (should-not
+           (cl-some
+            (lambda (s) (string-match-p "\\[user\\].*test agent_message" s)) texts))
+          (should-not
+           (cl-some (lambda (s) (string-match-p "Tinkering..." s)) texts)))))))
+
+(ert-deftest agent-shell-to-go-test-bridge-working-on-remote-prompt ()
+  "First init-finished sends `_Connected_'; later ones for remote prompts send spinner verbs.
+The test fixture enables bridge mode after the ACP session is established, so the
+first fire the bridge sees is the one triggered by the first remote prompt rather
+than initial connect.  Two prompts are sent to verify the transition."
+  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
+    (agent-shell-to-go-test-bridge--with-session tr buf
+      (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
+            (channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf)))
+        (agent-shell-to-go-test-inbound-message
+         tr channel-id thread-id "testuser" "first remote message")
+        (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+        (let* ((texts-1 (agent-shell-to-go-test-bridge--sent-texts tr))
+               (connected-1
+                (cl-count-if (lambda (s) (string-match-p "Connected" s)) texts-1))
+               (working-1
+                (cl-count-if (lambda (s) (string-match-p "Tinkering..." s)) texts-1)))
+          (should (= 1 connected-1))
+          (should (= 0 working-1)))
+        (agent-shell-to-go-test-inbound-message
+         tr channel-id thread-id "testuser" "second remote message")
+        (should
+         (agent-shell-to-go-test-bridge--wait-until
+          (lambda ()
+            (cl-some
+             (lambda (s) (string-match-p "Tinkering..." s))
+             (agent-shell-to-go-test-bridge--sent-texts tr)))
+          15))
+        (let* ((texts-2 (agent-shell-to-go-test-bridge--sent-texts tr))
+               (connected-2
+                (cl-count-if (lambda (s) (string-match-p "Connected" s)) texts-2)))
+          (should (= 1 connected-2)))))))
+
+(ert-deftest agent-shell-to-go-test-bridge-no-working-on-local-prompt ()
+  "Local prompts (typed via `agent-shell-insert') do not emit `_Working..._'.
+The `init-finished' gate on `--remote-queued' suppresses the liveness
+signal for locally-originated prompts; they already get `Processing...'
+from `--on-send-command'."
   (agent-shell-to-go-test-bridge--with-session tr buf
-    (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
-          (channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf)))
-      (agent-shell-to-go-test-inbound-message
-       tr channel-id thread-id "testuser" "test agent_message")
-      (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
-        (should-not
-         (cl-some
-          (lambda (text) (string-match-p "\\[user\\].*test agent_message" text)) texts))
-        (should-not
-         (cl-some (lambda (text) (string-match-p "Processing" text)) texts))))))
+    ;; First local prompt — bridge subscribes after ACP init in the fixture,
+    ;; so the first init-finished it observes is the one triggered here.
+    ;; That fire sends `_Connected_'.
+    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
+    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+    ;; Second local prompt — connected-emitted is now t, --remote-queued
+    ;; is empty (this prompt came from `agent-shell-insert', not
+    ;; `--inject-message'), so neither `_Connected_' nor `_Working..._'
+    ;; should fire on this turn.
+    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
+    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+    (let* ((texts (agent-shell-to-go-test-bridge--sent-texts tr))
+           (working-count
+            (cl-count-if (lambda (s) (string-match-p "Working" s)) texts)))
+      (should (= 0 working-count)))))
 
 (ert-deftest agent-shell-to-go-test-bridge-help-command ()
   "!help sends a command reference synchronously without touching agent-shell.
@@ -659,8 +723,8 @@ Verifies inherit-state carries transport/channel/thread to the new buffer."
            (projects-dir (make-temp-file "ag2g-test-projects" t)))
       (unwind-protect
           (let ((agent-shell-to-go-projects-directory projects-dir))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
-             "!new-agent no-such-project")
+            (agent-shell-to-go-test-inbound-message
+             tr channel nil "testuser" "!new-agent no-such-project")
             (should
              (cl-some
               (lambda (text) (string-match-p "Usage" text))
@@ -671,8 +735,8 @@ Verifies inherit-state carries transport/channel/thread to the new buffer."
   "!new-agent with an absolute path replies with a usage error."
   (agent-shell-to-go-test-bridge--with-session tr buf
     (let ((channel (buffer-local-value 'agent-shell-to-go--channel-id buf)))
-      (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
-       "!new-agent /tmp/some-folder")
+      (agent-shell-to-go-test-inbound-message
+       tr channel nil "testuser" "!new-agent /tmp/some-folder")
       (should
        (cl-some
         (lambda (text) (string-match-p "Usage" text))
@@ -702,8 +766,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                      (setq new-buf
                            (agent-shell-start
                             :config (agent-shell-mock-agent-make-agent-config)))))))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
-             (format "!new-agent %s" project-name))
+            (agent-shell-to-go-test-inbound-message
+             tr channel nil "testuser" (format "!new-agent %s" project-name))
             (should
              (cl-some
               (lambda (text) (string-match-p "Agent started in" text))
@@ -737,8 +801,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                       (list
                        agent-shell-to-go-test-bridge--python
                        "tests/deps/mock-acp/src/main.py"))
-                     (default-directory
-                      agent-shell-to-go-test-bridge--mock-acp-root))
+                     (default-directory agent-shell-to-go-test-bridge--mock-acp-root))
                  (setq new-buf
                        (agent-shell-start
                         :config (agent-shell-mock-agent-make-agent-config)))))))
@@ -758,8 +821,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
   "!new-project with a name containing disallowed chars replies with a usage error."
   (agent-shell-to-go-test-bridge--with-session tr buf
     (let ((channel (buffer-local-value 'agent-shell-to-go--channel-id buf)))
-      (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
-       "!new-project foo/bar")
+      (agent-shell-to-go-test-inbound-message
+       tr channel nil "testuser" "!new-project foo/bar")
       (should
        (cl-some
         (lambda (text) (string-match-p "Usage" text))
@@ -783,7 +846,11 @@ Connected notice is sent via init-finished once the ACP handshake completes."
       (unwind-protect
           (let ((agent-shell-to-go-projects-directory
                  (file-name-parent-directory existing)))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
+            (agent-shell-to-go-test-inbound-message
+             tr
+             channel
+             nil
+             "testuser"
              (format "!new-project %s" (file-name-nondirectory existing)))
             (should
              (cl-some
@@ -811,10 +878,11 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                      (setq new-buf
                            (agent-shell-start
                             :config (agent-shell-mock-agent-make-agent-config)))))))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser"
-             "!new-project my-proj")
+            (agent-shell-to-go-test-inbound-message
+             tr channel nil "testuser" "!new-project my-proj")
             (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
-              (should (cl-some (lambda (t) (string-match-p "Creating project" t)) texts))
+              (should
+               (cl-some (lambda (t) (string-match-p "Creating project" t)) texts))
               (should (cl-some (lambda (t) (string-match-p "Starting Claude" t)) texts))
               (should (cl-some (lambda (t) (string-match-p "Agent started" t)) texts))
               (should (file-directory-p (expand-file-name "my-proj" projects-dir)))))
@@ -847,11 +915,9 @@ Connected notice is sent via init-finished once the ACP handshake completes."
         (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!resume")
         (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
           (should (cl-some (lambda (t) (string-match-p "1\\." t)) texts))
-          (should
-           (cl-some (lambda (t) (string-match-p "Build the thing" t)) texts))
+          (should (cl-some (lambda (t) (string-match-p "Build the thing" t)) texts))
           (should (cl-some (lambda (t) (string-match-p "2\\." t)) texts))
-          (should
-           (cl-some (lambda (t) (string-match-p "Fix the bug" t)) texts)))))))
+          (should (cl-some (lambda (t) (string-match-p "Fix the bug" t)) texts)))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-command-resume-empty-sessions ()
   "!resume with no arg replies with no-sessions message when ACP returns an empty list."
@@ -877,7 +943,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
         (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!resume")
         (should
          (cl-some
-          (lambda (text) (string-match-p "Failed to fetch session list" text))
+          (lambda (text)
+            (string-match-p "Failed to fetch session list" text))
           (agent-shell-to-go-test-bridge--sent-texts tr)))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-command-resume-default-first ()
@@ -889,9 +956,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
            (resumed-id nil))
       (agent-shell-to-go-test-bridge--with-mock-acp-sessions
           (list
-           '((sessionId . "S1")
-             (title . "First")
-             (updatedAt . "2024-01-01T00:00:00Z"))
+           '((sessionId . "S1") (title . "First") (updatedAt . "2024-01-01T00:00:00Z"))
            '((sessionId . "S2")
              (title . "Second")
              (updatedAt . "2024-01-01T00:00:00Z")))
@@ -913,9 +978,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
            (resumed-id nil))
       (agent-shell-to-go-test-bridge--with-mock-acp-sessions
           (list
-           '((sessionId . "S1")
-             (title . "First")
-             (updatedAt . "2024-01-01T00:00:00Z"))
+           '((sessionId . "S1") (title . "First") (updatedAt . "2024-01-01T00:00:00Z"))
            '((sessionId . "S2")
              (title . "Second")
              (updatedAt . "2024-01-01T00:00:00Z")))
@@ -959,8 +1022,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
            '((sessionId . "S1")
              (title . "Only one")
              (updatedAt . "2024-01-01T00:00:00Z")))
-        (cl-letf (((symbol-function 'agent-shell-resume-session)
-                   (lambda (_id) nil)))
+        (cl-letf (((symbol-function 'agent-shell-resume-session) (lambda (_id) nil)))
           (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!resume 5")
           (should
            (cl-some
@@ -977,7 +1039,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
         (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!resume")
         (should
          (cl-some
-          (lambda (text) (string-match-p "Cannot determine project" text))
+          (lambda (text)
+            (string-match-p "Cannot determine project" text))
           (agent-shell-to-go-test-bridge--sent-texts tr)))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-command-resume-session-error ()
@@ -1009,7 +1072,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
             (make-directory (expand-file-name "alpha" tmpdir))
             (make-directory (expand-file-name "beta" tmpdir))
             (make-directory (expand-file-name ".hidden" tmpdir))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!projects")
+            (agent-shell-to-go-test-inbound-message
+             tr channel nil "testuser" "!projects")
             (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
               (should (cl-some (lambda (t) (string-match-p "alpha" t)) texts))
               (should (cl-some (lambda (t) (string-match-p "beta" t)) texts))
@@ -1023,7 +1087,8 @@ Connected notice is sent via init-finished once the ACP handshake completes."
            (tmpdir (make-temp-file "ag2g-test-projects-empty" t)))
       (unwind-protect
           (let ((agent-shell-to-go-projects-directory tmpdir))
-            (agent-shell-to-go-test-inbound-message tr channel nil "testuser" "!projects")
+            (agent-shell-to-go-test-inbound-message
+             tr channel nil "testuser" "!projects")
             (should
              (cl-some
               (lambda (text) (string-match-p "No projects found" text))

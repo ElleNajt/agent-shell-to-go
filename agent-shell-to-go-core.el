@@ -111,7 +111,56 @@ Keys: `start' (shown while running), `completed', `failed'."
   :type '(alist :key-type symbol :value-type string)
   :group 'agent-shell-to-go)
 
-; Shared utilities
+(defcustom agent-shell-to-go-spinner-verbs
+  '("Actioning"
+    "Actualizing"
+    "Architecting"
+    "Baking"
+    "Beaming"
+    "Booping"
+    "Bootstrapping"
+    "Brewing"
+    "Calculating"
+    "Channeling"
+    "Churning"
+    "Contemplating"
+    "Deciphering"
+    "Deliberating"
+    "Embellishing"
+    "Enchanting"
+    "Envisioning"
+    "Forging"
+    "Frosting"
+    "Hashing"
+    "Improvising"
+    "Inferring"
+    "Levitating"
+    "Manifesting"
+    "Metamorphosing"
+    "Orchestrating"
+    "Philosophising"
+    "Pondering"
+    "Puzzling"
+    "Ruminating"
+    "Shenaniganing"
+    "Simmering"
+    "Sketching"
+    "Synthesizing"
+    "Tinkering")
+  "Pool of busy-indicator verbs sent to the transport while the agent works.
+A random entry is picked each time, formatted as `_VERB..._' and sent
+both for locally-typed prompts (via `--on-send-command') and for
+remote-originated prompts (via `--on-init-finished')."
+  :type '(repeat string))
+
+(defun agent-shell-to-go--get-random-spiner-verb ()
+  "Randomly get a spinner word from `agent-shell-to-go-spinner-verbs'."
+  (format "_%s..._"
+          (seq-elt
+           agent-shell-to-go-spinner-verbs
+           (random (seq-length agent-shell-to-go-spinner-verbs)))))
+
+; Shared utilities 
 
 (defconst agent-shell-to-go--debug-buffer-name "*agent-shell-to-go-debug*"
   "Name of the buffer used for debug logging.")

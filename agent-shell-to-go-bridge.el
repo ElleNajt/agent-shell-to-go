@@ -51,6 +51,12 @@ polls on init-finished and turn-complete and dedupes internally).")
 (defvar-local agent-shell-to-go--init-finished-subscription nil
   "Subscription token for init-finished events (Ready signal for new sessions).")
 
+(defvar-local agent-shell-to-go--connected-emitted nil
+  "Non-nil after `_Connected_' has been sent for this buffer.
+Used to switch subsequent `init-finished' fires (which agent-shell
+re-emits on every prompt) over to a random spinner-verb liveness
+signal drawn from `agent-shell-to-go-spinner-verbs'.")
+
 (defvar-local agent-shell-to-go--error-subscription nil
   "Subscription token for error events.")
 
@@ -568,7 +574,7 @@ HANDLER is called with (ARGS BUFFER) with BUFFER current.")
        (t
         (funcall (caar cmd-entries) (and arg (list arg)) buffer))))))
 
-; Inbound hook handlers (registered on message/reaction hooks)
+; Inbound hook handlers (registered on message/reaction hooks) 
 
 (cl-defun agent-shell-to-go--bridge-on-message
     (&key transport channel-id thread-id text &allow-other-keys)
@@ -805,7 +811,14 @@ is not ready.  Returns t to suppress the Emacs permission UI."
       (funcall agent-shell-to-go--prev-permission-responder permission))))
 
 (defun agent-shell-to-go--on-send-command (orig-fn &rest args)
-  "Advice around `agent-shell--send-command'.  Mirror user prompts."
+  "Advice around `agent-shell--send-command'.
+For locally-originated prompts, mirror the user-message to the
+transport and follow it with a random spinner verb from
+`agent-shell-to-go-spinner-verbs' as a busy indicator.  Prompts that
+match `agent-shell-to-go--remote-queued' (originated from the
+transport) are dequeued without mirroring -- the remote sender does
+not need its own message echoed back, and the spinner verb is sent
+by `--on-init-finished' instead."
   (let ((prompt (map-elt args :prompt)))
     (if (and prompt (member prompt agent-shell-to-go--remote-queued))
         (setq agent-shell-to-go--remote-queued
@@ -814,7 +827,7 @@ is not ready.  Returns t to suppress the Emacs permission UI."
         (agent-shell-to-go--send
          (agent-shell-to-go-transport-format-user-message
           agent-shell-to-go--transport prompt))
-        (agent-shell-to-go--send "Processing..."))))
+        (agent-shell-to-go--send (agent-shell-to-go--get-random-spiner-verb)))))
   (setq agent-shell-to-go--current-agent-message nil)
   (apply orig-fn args))
 
@@ -826,9 +839,20 @@ is not ready.  Returns t to suppress the Emacs permission UI."
     (agent-shell-to-go--send "*Agent failed to start* — check API key / OAuth token")))
 
 (defun agent-shell-to-go--on-init-finished (_event)
-  "Handle init-finished event.  Notify remote that the session is connected."
+  "Handle init-finished event.
+agent-shell re-emits `init-finished' on every `agent-shell--handle' call
+once the ACP stack is up, so:
+- First fire: send `_Connected_' (initial ACP handshake done).
+- Subsequent fires triggered by a remote-originated prompt: send a
+  random spinner verb from `agent-shell-to-go-spinner-verbs' as a
+  liveness signal.  Local prompts get their spinner verb separately
+  via `--on-send-command', so no extra notice is sent here."
   (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id)
-    (agent-shell-to-go--send "_Connected_")))
+    (if agent-shell-to-go--connected-emitted
+        (when agent-shell-to-go--remote-queued
+          (agent-shell-to-go--send (agent-shell-to-go--get-random-spiner-verb)))
+      (agent-shell-to-go--send "_Connected_")
+      (setq agent-shell-to-go--connected-emitted t))))
 
 (defun agent-shell-to-go--on-error (event)
   "Handle error event.  Forward the error message to the remote transport."

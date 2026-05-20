@@ -105,9 +105,7 @@ Default is 7 days."
   :group 'agent-shell-to-go)
 
 (defcustom agent-shell-to-go-tool-call-icons
-  '((start     . "🛠️")
-    (completed . "✅")
-    (failed    . "❌"))
+  '((start . "🛠️") (completed . "✅") (failed . "❌"))
   "Alist mapping tool-call status symbols to emoji strings.
 Keys: `start' (shown while running), `completed', `failed'."
   :type '(alist :key-type symbol :value-type string)
@@ -587,6 +585,5 @@ Closes any existing socket first."
   "Schedule FN with ARGS to run on the next event loop iteration."
   (apply #'run-at-time 0 nil fn args))
 
-(provide 'agent-shell-to-go-core) 
-
+(provide 'agent-shell-to-go-core)
 ;;; agent-shell-to-go-core.el ends here

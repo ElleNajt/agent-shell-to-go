@@ -1066,85 +1066,86 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
   (if (and agent-shell-to-go--thread-id
            (memq (current-buffer) agent-shell-to-go--active-buffers))
       (agent-shell-to-go--debug
-       "bridge-enable: already enabled for %s, skipping"
-       (buffer-name))
-  ;; `agent-shell-to-go--inherit-state' is set by !restart to carry the old
-  ;; session's transport/channel/thread over to the new buffer.  Consumed
-  ;; here (set to nil) so it's a one-shot handoff and can't leak elsewhere.
-  (let* ((inherited agent-shell-to-go--inherit-state)
-         (_ (setq agent-shell-to-go--inherit-state nil))
-         (transport
-          (or (map-elt inherited :transport) (agent-shell-to-go--get-transport)))
-         (project-path (agent-shell-to-go--get-project-path)))
-    ;; Load credentials / connect if needed
-    (unless (agent-shell-to-go-transport-connected-p transport)
-      (agent-shell-to-go-transport-connect transport))
-    ;; Resolve channel (reuse inherited or create fresh)
-    (setq agent-shell-to-go--transport transport)
-    (setq agent-shell-to-go--channel-id
-          (or (map-elt inherited :channel-id)
-              (agent-shell-to-go-transport-ensure-project-channel
-               transport project-path)))
-    ;; Start thread (reuse inherited or create fresh)
-    (setq agent-shell-to-go--thread-id
-          (or (map-elt inherited :thread-id)
-              (agent-shell-to-go-transport-start-thread
-               transport agent-shell-to-go--channel-id (buffer-name))))
-    ;; Track buffer
-    (add-to-list 'agent-shell-to-go--active-buffers (current-buffer))
+       "bridge-enable: already enabled for %s, skipping" (buffer-name))
+    ;; `agent-shell-to-go--inherit-state' is set by !restart to carry the old
+    ;; session's transport/channel/thread over to the new buffer.  Consumed
+    ;; here (set to nil) so it's a one-shot handoff and can't leak elsewhere.
+    (let* ((inherited agent-shell-to-go--inherit-state)
+           (_ (setq agent-shell-to-go--inherit-state nil))
+           (transport
+            (or (map-elt inherited :transport) (agent-shell-to-go--get-transport)))
+           (project-path (agent-shell-to-go--get-project-path)))
+      ;; Load credentials / connect if needed
+      (unless (agent-shell-to-go-transport-connected-p transport)
+        (agent-shell-to-go-transport-connect transport))
+      ;; Resolve channel (reuse inherited or create fresh)
+      (setq agent-shell-to-go--transport transport)
+      (setq agent-shell-to-go--channel-id
+            (or (map-elt inherited :channel-id)
+                (agent-shell-to-go-transport-ensure-project-channel
+                 transport project-path)))
+      ;; Start thread (reuse inherited or create fresh)
+      (setq agent-shell-to-go--thread-id
+            (or (map-elt inherited :thread-id)
+                (agent-shell-to-go-transport-start-thread
+                 transport agent-shell-to-go--channel-id (buffer-name))))
+      ;; Track buffer
+      (add-to-list 'agent-shell-to-go--active-buffers (current-buffer))
 
-    ;; Save and install permission responder
-    (setq agent-shell-to-go--prev-permission-responder
-          agent-shell-permission-responder-function)
-    (setq-local agent-shell-permission-responder-function
-                #'agent-shell-to-go--permission-responder)
-    ;; Add advice
-    (advice-add 'agent-shell--send-command :around #'agent-shell-to-go--on-send-command)
-    (advice-add
-     'agent-shell--on-notification
-     :around #'agent-shell-to-go--on-notification)
-    ;; Subscribe to init-client to detect client creation failure
-    (setq agent-shell-to-go--init-client-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'init-client
-           :on-event #'agent-shell-to-go--on-init-client))
-    ;; Subscribe to init-finished to send Ready when a new session connects.
-    ;; init-client fires synchronously inside agent-shell-start so it is too
-    ;; early; init-finished fires async after the ACP handshake completes.
-    (setq agent-shell-to-go--init-finished-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'init-finished
-           :on-event #'agent-shell-to-go--on-init-finished))
-    ;; Subscribe to error events and forward to remote transport
-    (setq agent-shell-to-go--error-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'error
-           :on-event #'agent-shell-to-go--on-error))
-    ;; Subscribe to session-title-changed (agent-shell polls + dedupes upstream)
-    (setq agent-shell-to-go--session-title-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'session-title-changed
-           :on-event #'agent-shell-to-go--on-session-title-changed))
-    ;; Subscribe to turn-complete for flush + ready signal
-    (setq agent-shell-to-go--ready-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'turn-complete
-           :on-event #'agent-shell-to-go--on-turn-complete))
-    ;; Subscribe to tool-call-update for tool call mirroring
-    (setq agent-shell-to-go--tool-call-update-subscription
-          (agent-shell-subscribe-to
-           :shell-buffer (current-buffer)
-           :event 'tool-call-update
-           :on-event #'agent-shell-to-go--bridge-on-tool-call-update))
-    ;; Kill hook
-    (add-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill nil t)
-    (agent-shell-to-go--debug
-     "bridge enabled, thread=%s" agent-shell-to-go--thread-id))))
+      ;; Save and install permission responder
+      (setq agent-shell-to-go--prev-permission-responder
+            agent-shell-permission-responder-function)
+      (setq-local agent-shell-permission-responder-function
+                  #'agent-shell-to-go--permission-responder)
+      ;; Add advice
+      (advice-add
+       'agent-shell--send-command
+       :around #'agent-shell-to-go--on-send-command)
+      (advice-add
+       'agent-shell--on-notification
+       :around #'agent-shell-to-go--on-notification)
+      ;; Subscribe to init-client to detect client creation failure
+      (setq agent-shell-to-go--init-client-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'init-client
+             :on-event #'agent-shell-to-go--on-init-client))
+      ;; Subscribe to init-finished to send Ready when a new session connects.
+      ;; init-client fires synchronously inside agent-shell-start so it is too
+      ;; early; init-finished fires async after the ACP handshake completes.
+      (setq agent-shell-to-go--init-finished-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'init-finished
+             :on-event #'agent-shell-to-go--on-init-finished))
+      ;; Subscribe to error events and forward to remote transport
+      (setq agent-shell-to-go--error-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'error
+             :on-event #'agent-shell-to-go--on-error))
+      ;; Subscribe to session-title-changed (agent-shell polls + dedupes upstream)
+      (setq agent-shell-to-go--session-title-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'session-title-changed
+             :on-event #'agent-shell-to-go--on-session-title-changed))
+      ;; Subscribe to turn-complete for flush + ready signal
+      (setq agent-shell-to-go--ready-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'turn-complete
+             :on-event #'agent-shell-to-go--on-turn-complete))
+      ;; Subscribe to tool-call-update for tool call mirroring
+      (setq agent-shell-to-go--tool-call-update-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'tool-call-update
+             :on-event #'agent-shell-to-go--bridge-on-tool-call-update))
+      ;; Kill hook
+      (add-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill nil t)
+      (agent-shell-to-go--debug
+       "bridge enabled, thread=%s" agent-shell-to-go--thread-id))))
 
 (defun agent-shell-to-go--on-buffer-kill ()
   "Hook to run when an agent-shell buffer is killed."

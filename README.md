@@ -148,6 +148,7 @@ Send these in the thread to control the session:
 | `!mode` | Show current mode |
 | `!stop` | Interrupt the agent |
 | `!restart` | Kill and restart agent with transcript |
+| `!kill` | Kill the agent without restarting |
 | `!queue` | Show pending queued messages |
 | `!clearqueue` | Clear all pending queued messages |
 | `!info` | Show session info |

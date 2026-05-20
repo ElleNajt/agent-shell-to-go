@@ -250,6 +250,7 @@ where each entry is a plist with :kind and :option-id."
     "`!mode` — show current mode\n"
     "`!stop` — interrupt agent\n"
     "`!restart` — kill and restart agent\n"
+    "`!kill` — kill agent without restarting\n"
     "`!queue` — show queued messages\n"
     "`!clearqueue` — clear queued messages\n"
     "`!info` — show session info\n"
@@ -310,6 +311,17 @@ where each entry is a plist with :kind and :option-id."
         (agent-shell-to-go--send "Agent interrupted"))
     (error
      (agent-shell-to-go--send (format "Stop failed: %s" err)))))
+
+(defun agent-shell-to-go--cmd-kill (_args buffer)
+  (condition-case err
+      (progn
+        (agent-shell-to-go--send "Killing agent…")
+        (ignore-errors
+          (agent-shell-interrupt t))
+        ;; bridge-disable runs via kill-buffer-hook and sends "_Session ended_".
+        (kill-buffer buffer))
+    (error
+     (agent-shell-to-go--send (format "Kill failed: %s" err)))))
 
 (defun agent-shell-to-go--cmd-restart (_args buffer)
   (condition-case err
@@ -487,6 +499,7 @@ where each entry is a plist with :kind and :option-id."
     ;; control
     (,#'agent-shell-to-go--cmd-stop "!stop")
     (,#'agent-shell-to-go--cmd-restart "!restart")
+    (,#'agent-shell-to-go--cmd-kill "!kill")
     ;; projects
     (,#'agent-shell-to-go--cmd-projects "!projects")
     (,#'agent-shell-to-go--cmd-new-agent "!new-agent")

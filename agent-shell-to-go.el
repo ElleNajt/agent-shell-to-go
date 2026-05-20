@@ -6,7 +6,7 @@
 ;; Maintainer: junyi.hou <junyi.yi.hou@gmail.com>
 ;; URL: https://github.com/ElleNajt/agent-shell-to-go
 ;; Version: 0.4.0
-;; Package-Requires: ((emacs "29.1") (agent-shell "0.50.1") (acp "0.11.3") (shell-maker "0.90.1") (websocket "1.14"))
+;; Package-Requires: ((emacs "29.1") (agent-shell "0.52.1") (acp "0.12.1") (shell-maker "0.91.2") (websocket "1.16"))
 ;; Keywords: convenience, tools, ai
 
 ;; This file is not part of GNU Emacs.

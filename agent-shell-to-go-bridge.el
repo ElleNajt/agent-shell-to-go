@@ -34,11 +34,10 @@
 (defvar-local agent-shell-to-go--current-agent-message nil
   "Accumulator for streaming agent message chunks.")
 
-(defvar-local agent-shell-to-go--thread-title-updated nil
-  "Non-nil after the thread header has been updated with a session title.")
-
-(defvar-local agent-shell-to-go--turn-complete-subscription nil
-  "Subscription token for the turn-complete event (session title fetch).")
+(defvar-local agent-shell-to-go--session-title-subscription nil
+  "Subscription token for the `session-title-changed' event.
+agent-shell emits this whenever the ACP session title changes (it
+polls on init-finished and turn-complete and dedupes internally).")
 
 (defvar-local agent-shell-to-go--ready-subscription nil
   "Subscription token for flushing agent message and sending ready signal.")
@@ -741,43 +740,17 @@ Updates `agent-shell-to-go--session-list-cache' on success."
 
 ; agent shell subscriptions 
 
-;; TODO: use the new session-title-changed event
-;; This needs a more recent `agent-shell'
-(defun agent-shell-to-go--fetch-session-title (_event)
-  "Fetch session title via ACP and update the thread header."
-  (when (and (not agent-shell-to-go--thread-title-updated)
-             agent-shell-to-go--thread-id
-             (boundp 'agent-shell--state)
-             agent-shell--state)
-    (let* ((session-id (map-nested-elt agent-shell--state '(:session :id)))
-           (client (map-elt agent-shell--state :client))
-           (cwd (agent-shell--resolve-path default-directory)))
-      (when (and session-id client cwd)
-        (acp-send-request
-         :client client
-         :request (acp-make-session-list-request :cwd cwd)
-         :buffer (current-buffer)
-         :on-success
-         (lambda (resp)
-           (let* ((sessions (append (or (map-elt resp 'sessions) '()) nil))
-                  (current
-                   (seq-find
-                    (lambda (s) (equal (map-elt s 'sessionId) session-id)) sessions))
-                  (title (and current (map-elt current 'title))))
-             (when (and title (not (string-empty-p title)))
-               (agent-shell-to-go-transport-update-thread-header
-                agent-shell-to-go--transport
-                agent-shell-to-go--channel-id
-                agent-shell-to-go--thread-id
-                title)
-               (setq agent-shell-to-go--thread-title-updated t)
-               (when agent-shell-to-go--turn-complete-subscription
-                 (agent-shell-unsubscribe
-                  :subscription agent-shell-to-go--turn-complete-subscription)
-                 (setq agent-shell-to-go--turn-complete-subscription nil)))))
-         :on-failure
-         (lambda (_err _raw)
-           (agent-shell-to-go--debug "failed to fetch session title")))))))
+(defun agent-shell-to-go--on-session-title-changed (event)
+  "Update the thread header from a `session-title-changed' EVENT.
+agent-shell already polls and dedupes (only emits on a real change)."
+  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id)
+    (let ((title (map-nested-elt event '(:data :title))))
+      (when (and title (not (string-empty-p title)))
+        (agent-shell-to-go-transport-update-thread-header
+         agent-shell-to-go--transport
+         agent-shell-to-go--channel-id
+         agent-shell-to-go--thread-id
+         title)))))
 
 (defun agent-shell-to-go--on-turn-complete (_event)
   "Flush buffered agent message and send ready signal."
@@ -1150,12 +1123,12 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
            :shell-buffer (current-buffer)
            :event 'error
            :on-event #'agent-shell-to-go--on-error))
-    ;; Subscribe to turn-complete for session title
-    (setq agent-shell-to-go--turn-complete-subscription
+    ;; Subscribe to session-title-changed (agent-shell polls + dedupes upstream)
+    (setq agent-shell-to-go--session-title-subscription
           (agent-shell-subscribe-to
            :shell-buffer (current-buffer)
-           :event 'turn-complete
-           :on-event #'agent-shell-to-go--fetch-session-title))
+           :event 'session-title-changed
+           :on-event #'agent-shell-to-go--on-session-title-changed))
     ;; Subscribe to turn-complete for flush + ready signal
     (setq agent-shell-to-go--ready-subscription
           (agent-shell-subscribe-to
@@ -1186,7 +1159,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
             agent-shell-to-go--init-client-subscription
             agent-shell-to-go--init-finished-subscription
             agent-shell-to-go--error-subscription
-            agent-shell-to-go--turn-complete-subscription
+            agent-shell-to-go--session-title-subscription
             agent-shell-to-go--ready-subscription
             agent-shell-to-go--tool-call-update-subscription))
     (when sub
@@ -1196,7 +1169,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
    agent-shell-to-go--init-client-subscription nil
    agent-shell-to-go--init-finished-subscription nil
    agent-shell-to-go--error-subscription nil
-   agent-shell-to-go--turn-complete-subscription nil
+   agent-shell-to-go--session-title-subscription nil
    agent-shell-to-go--ready-subscription nil
    agent-shell-to-go--tool-call-update-subscription nil)
   (when (and agent-shell-to-go--thread-id
@@ -1255,18 +1228,17 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
         ;; Refresh subscriptions for the new thread
         (dolist (sub
                  (list
-                  agent-shell-to-go--turn-complete-subscription
+                  agent-shell-to-go--session-title-subscription
                   agent-shell-to-go--ready-subscription
                   agent-shell-to-go--tool-call-update-subscription))
           (when sub
             (ignore-errors
               (agent-shell-unsubscribe :subscription sub))))
-        (setq agent-shell-to-go--turn-complete-subscription
+        (setq agent-shell-to-go--session-title-subscription
               (agent-shell-subscribe-to
                :shell-buffer buf
-               :event 'turn-complete
-               :on-event
-               (lambda (_event) (agent-shell-to-go--fetch-session-title))))
+               :event 'session-title-changed
+               :on-event #'agent-shell-to-go--on-session-title-changed))
         (setq agent-shell-to-go--ready-subscription
               (agent-shell-subscribe-to
                :shell-buffer buf

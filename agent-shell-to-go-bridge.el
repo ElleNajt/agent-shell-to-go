@@ -1084,6 +1084,17 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
 
 (defun agent-shell-to-go--bridge-enable ()
   "Enable transport mirroring for this buffer."
+  ;; `define-minor-mode' re-runs its body on every positive-arg call, and
+  ;; both `agent-shell-mode-hook' (via `agent-shell-to-go-auto-enable') and
+  ;; the !-command flows call `(agent-shell-to-go-mode 1)' on freshly
+  ;; started buffers.  Without this guard the second run would register
+  ;; duplicate subscriptions (doubling "Connected" / "Ready for input"
+  ;; notices) and start a second thread.
+  (if (and agent-shell-to-go--thread-id
+           (memq (current-buffer) agent-shell-to-go--active-buffers))
+      (agent-shell-to-go--debug
+       "bridge-enable: already enabled for %s, skipping"
+       (buffer-name))
   ;; `agent-shell-to-go--inherit-state' is set by !restart to carry the old
   ;; session's transport/channel/thread over to the new buffer.  Consumed
   ;; here (set to nil) so it's a one-shot handoff and can't leak elsewhere.
@@ -1160,7 +1171,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
     ;; Kill hook
     (add-hook 'kill-buffer-hook #'agent-shell-to-go--on-buffer-kill nil t)
     (agent-shell-to-go--debug
-     "bridge enabled, thread=%s" agent-shell-to-go--thread-id)))
+     "bridge enabled, thread=%s" agent-shell-to-go--thread-id))))
 
 (defun agent-shell-to-go--on-buffer-kill ()
   "Hook to run when an agent-shell buffer is killed."

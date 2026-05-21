@@ -384,7 +384,8 @@ Options plist supports :truncate."
           (agent-shell-to-go--discord-api
            "PATCH" (format "/channels/%s/messages/%s" channel-id message-id)
            `((content . ,safe)))))
-    (agent-shell-to-go--debug "edit-message: msg=%s resp=%s" message-id (json-encode resp))
+    (agent-shell-to-go--debug
+     "edit-message: msg=%s resp=%s" message-id (json-encode resp))
     (map-elt resp 'id)))
 
 (cl-defmethod agent-shell-to-go-transport-upload-file
@@ -522,7 +523,8 @@ CHANNEL-ID must be a forum channel; LABEL becomes the post title."
     ((transport agent-shell-to-go-discord-transport) channel-id thread-id)
   "Delete the Discord forum post THREAD-ID (deletes its thread channel)."
   (when thread-id
-    (agent-shell-to-go--discord-api "DELETE" (format "/channels/%s" thread-id))))
+    (agent-shell-to-go--discord-api "DELETE" (format "/channels/%s" thread-id))
+    (remhash thread-id (agent-shell-to-go-discord-transport-thread-parents transport))))
 
 ;; Semantic formatters — Discord uses CommonMark natively so no conversion needed.
 
@@ -534,12 +536,12 @@ CHANNEL-ID must be a forum channel; LABEL becomes the post title."
     ((transport agent-shell-to-go-discord-transport) title status output)
   (let ((icon
          (cond
-           ((or (equal status "completed") (eq status 'completed))
-            (alist-get 'completed agent-shell-to-go-tool-call-icons))
-           ((or (equal status "failed") (eq status 'failed))
-            (alist-get 'failed    agent-shell-to-go-tool-call-icons))
-           (t
-            (alist-get 'start     agent-shell-to-go-tool-call-icons)))))
+          ((or (equal status "completed") (eq status 'completed))
+           (alist-get 'completed agent-shell-to-go-tool-call-icons))
+          ((or (equal status "failed") (eq status 'failed))
+           (alist-get 'failed agent-shell-to-go-tool-call-icons))
+          (t
+           (alist-get 'start agent-shell-to-go-tool-call-icons)))))
     (if (and output (stringp output) (not (string-empty-p output)))
         (format "%s `%s`\n```\n%s\n```" icon title output)
       (format "%s `%s`" icon title))))

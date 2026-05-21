@@ -199,6 +199,10 @@ Long messages are automatically truncated to 500 characters. Add 👀 to see mor
 
 ;; Hide tool call outputs by default (just show ✅/❌)
 (setq agent-shell-to-go-show-tool-output nil)
+
+;; Route all sessions to a single fixed channel instead of one channel per project.
+;; Useful if you prefer a single inbox for all agents.
+(setq agent-shell-to-go-channel-id "C1234567890")
 ```
 
 ## Troubleshooting

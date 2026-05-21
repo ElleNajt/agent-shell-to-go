@@ -72,6 +72,13 @@ Each transport gets a subdirectory named after it."
   :type 'string
   :group 'agent-shell-to-go)
 
+(defcustom agent-shell-to-go-channel-id nil
+  "When non-nil, route all sessions to this transport channel.
+If nil (the default), each project gets its own channel via
+`agent-shell-to-go-transport-ensure-project-channel'."
+  :type '(choice (const nil) string)
+  :group 'agent-shell-to-go)
+
 (defcustom agent-shell-to-go-new-project-function nil
   "Function to call to set up a new project.
 Called with (PROJECT-NAME BASE-DIR CALLBACK).

@@ -1079,6 +1079,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
       (setq agent-shell-to-go--transport transport)
       (setq agent-shell-to-go--channel-id
             (or (map-elt inherited :channel-id)
+                agent-shell-to-go-channel-id
                 (agent-shell-to-go-transport-ensure-project-channel
                  transport project-path)))
       ;; Start thread (reuse inherited or create fresh)
@@ -1206,8 +1207,9 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
           (agent-shell-to-go-transport-connect transport))
         (setq agent-shell-to-go--transport transport)
         (setq agent-shell-to-go--channel-id
-              (agent-shell-to-go-transport-ensure-project-channel
-               transport project-path))
+              (or agent-shell-to-go-channel-id
+                  (agent-shell-to-go-transport-ensure-project-channel
+                   transport project-path)))
         (setq agent-shell-to-go--thread-id
               (agent-shell-to-go-transport-start-thread
                transport agent-shell-to-go--channel-id (buffer-name)))

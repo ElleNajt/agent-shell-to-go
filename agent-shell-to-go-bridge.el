@@ -48,14 +48,8 @@ polls on init-finished and turn-complete and dedupes internally).")
 (defvar-local agent-shell-to-go--init-client-subscription nil
   "Subscription token for init-client events (failure detection).")
 
-(defvar-local agent-shell-to-go--init-finished-subscription nil
-  "Subscription token for init-finished events (Ready signal for new sessions).")
-
-(defvar-local agent-shell-to-go--connected-emitted nil
-  "Non-nil after `_Connected_' has been sent for this buffer.
-Used to switch subsequent `init-finished' fires (which agent-shell
-re-emits on every prompt) over to a random spinner-verb liveness
-signal drawn from `agent-shell-to-go-spinner-verbs'.")
+(defvar-local agent-shell-to-go--input-submitted-subscription nil
+  "Subscription token for input-submitted events (spinner signal).")
 
 (defvar-local agent-shell-to-go--error-subscription nil
   "Subscription token for error events.")
@@ -812,24 +806,22 @@ is not ready.  Returns t to suppress the Emacs permission UI."
 
 (defun agent-shell-to-go--on-send-command (orig-fn &rest args)
   "Advice around `agent-shell--send-command'.
-For locally-originated prompts, mirror the user-message to the
-transport and follow it with a random spinner verb from
-`agent-shell-to-go-spinner-verbs' as a busy indicator.  Prompts that
-match `agent-shell-to-go--remote-queued' (originated from the
-transport) are dequeued without mirroring -- the remote sender does
-not need its own message echoed back, and the spinner verb is sent
-by `--on-init-finished' instead."
+For locally-originated prompts, mirror the user-message to the transport.
+Prompts that match `agent-shell-to-go--remote-queued' (originated from the
+transport) are not echoed back.  Dequeue happens after `orig-fn' so that
+`--remote-queued' is still set when `input-submitted' fires inside it."
   (let ((prompt (map-elt args :prompt)))
-    (if (and prompt (member prompt agent-shell-to-go--remote-queued))
-        (setq agent-shell-to-go--remote-queued
-              (delete prompt agent-shell-to-go--remote-queued))
+    (unless (and prompt (member prompt agent-shell-to-go--remote-queued))
       (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id prompt)
         (agent-shell-to-go--send
          (agent-shell-to-go-transport-format-user-message
-          agent-shell-to-go--transport prompt))
-        (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb)))))
+          agent-shell-to-go--transport prompt)))))
   (setq agent-shell-to-go--current-agent-message nil)
-  (apply orig-fn args))
+  (apply orig-fn args)
+  (let ((prompt (map-elt args :prompt)))
+    (when (and prompt (member prompt agent-shell-to-go--remote-queued))
+      (setq agent-shell-to-go--remote-queued
+            (delete prompt agent-shell-to-go--remote-queued)))))
 
 (defun agent-shell-to-go--on-init-client (_event)
   "Handle init-client event.  Send failure notice if client was not created."
@@ -838,21 +830,12 @@ by `--on-init-finished' instead."
              (not (map-elt agent-shell--state :client)))
     (agent-shell-to-go--send "*Agent failed to start* — check API key / OAuth token")))
 
-(defun agent-shell-to-go--on-init-finished (_event)
-  "Handle init-finished event.
-agent-shell re-emits `init-finished' on every `agent-shell--handle' call
-once the ACP stack is up, so:
-- First fire: send `_Connected_' (initial ACP handshake done).
-- Subsequent fires triggered by a remote-originated prompt: send a
-  random spinner verb from `agent-shell-to-go-spinner-verbs' as a
-  liveness signal.  Local prompts get their spinner verb separately
-  via `--on-send-command', so no extra notice is sent here."
-  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id)
-    (if agent-shell-to-go--connected-emitted
-        (when agent-shell-to-go--remote-queued
-          (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb)))
-      (agent-shell-to-go--send "_Connected_")
-      (setq agent-shell-to-go--connected-emitted t))))
+(defun agent-shell-to-go--on-input-submitted (_event)
+  "Handle input-submitted event.
+Send a random spinner verb for remote-originated prompts only."
+  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id
+             agent-shell-to-go--remote-queued)
+    (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb))))
 
 (defun agent-shell-to-go--on-error (event)
   "Handle error event.  Forward the error message to the remote transport."
@@ -1124,14 +1107,12 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
              :shell-buffer (current-buffer)
              :event 'init-client
              :on-event #'agent-shell-to-go--on-init-client))
-      ;; Subscribe to init-finished to send Ready when a new session connects.
-      ;; init-client fires synchronously inside agent-shell-start so it is too
-      ;; early; init-finished fires async after the ACP handshake completes.
-      (setq agent-shell-to-go--init-finished-subscription
+      ;; Subscribe to input-submitted to send a spinner verb on every prompt.
+      (setq agent-shell-to-go--input-submitted-subscription
             (agent-shell-subscribe-to
              :shell-buffer (current-buffer)
-             :event 'init-finished
-             :on-event #'agent-shell-to-go--on-init-finished))
+             :event 'input-submitted
+             :on-event #'agent-shell-to-go--on-input-submitted))
       ;; Subscribe to error events and forward to remote transport
       (setq agent-shell-to-go--error-subscription
             (agent-shell-subscribe-to
@@ -1172,7 +1153,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
   (dolist (sub
            (list
             agent-shell-to-go--init-client-subscription
-            agent-shell-to-go--init-finished-subscription
+            agent-shell-to-go--input-submitted-subscription
             agent-shell-to-go--error-subscription
             agent-shell-to-go--session-title-subscription
             agent-shell-to-go--ready-subscription
@@ -1182,7 +1163,7 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
         (agent-shell-unsubscribe :subscription sub))))
   (setq
    agent-shell-to-go--init-client-subscription nil
-   agent-shell-to-go--init-finished-subscription nil
+   agent-shell-to-go--input-submitted-subscription nil
    agent-shell-to-go--error-subscription nil
    agent-shell-to-go--session-title-subscription nil
    agent-shell-to-go--ready-subscription nil

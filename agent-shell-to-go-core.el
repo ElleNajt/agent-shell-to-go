@@ -149,8 +149,7 @@ Keys: `start' (shown while running), `completed', `failed'."
     "Tinkering")
   "Pool of busy-indicator verbs sent to the transport while the agent works.
 A random entry is picked each time, formatted as `_VERB..._' and sent
-both for locally-typed prompts (via `--on-send-command') and for
-remote-originated prompts (via `--on-init-finished')."
+for remote-originated prompts via `--on-input-submitted'."
   :type '(repeat string)
   :group 'agent-shell-to-go)
 

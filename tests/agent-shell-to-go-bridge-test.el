@@ -22,10 +22,13 @@
 ;;
 ;;   agent-shell-to-go--on-send-command
 ;;     - user-message-echoed: user prompt echo to transport
+;;   agent-shell-to-go--on-input-submitted
+;;     - no-spinner-on-local-prompt: local prompts are echoed but produce no spinner
+;;     - spinner-sent-on-remote-prompt: spinner verb sent when remote prompt is submitted
 ;;   agent-shell-to-go--on-turn-complete
 ;;     - agent-message-forwarded: agent message forwarding on turn end
 ;;     - agent-message-multiple-chunks-forwarded: multiple chunks accumulated into one send
-;;     - remote-message-not-echoed: remote-injected messages produce no echo or spinner verb from --on-send-command
+;;     - remote-message-not-echoed: remote-injected messages produce no [user] echo
 ;;   agent-shell-to-go--bridge-on-tool-call-update
 ;;     - tool-call-forwarded: tool call forwarding (generic)
 ;;     - tool-call-output-shown: show-tool-output t: full text output
@@ -66,6 +69,7 @@
 ;;     - resume-session-error: !resume 1 reports error when resume-session signals
 ;;   agent-shell-to-go--on-init-client
 ;;     - on-init-client-nil-client: failure branch when :client is nil
+;;   agent-shell-to-go--on-input-submitted (see spinner-sent-on-* above)
 ;;   agent-shell-to-go--on-error
 ;;     - on-error-server-init-error: ACP init error forwarding
 ;;     - on-error-auth-failure: ACP auth error forwarding
@@ -234,16 +238,12 @@ normal session-ID wait would time out."
 ;;; Tests
 
 (ert-deftest agent-shell-to-go-test-bridge-user-message-echoed ()
-  "The user prompt is echoed and followed by a spinner verb before the agent replies.
-`agent-shell-to-go-spinner-verbs' is pinned to a single deterministic
-verb so the assertion is exact."
-  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
-    (agent-shell-to-go-test-bridge--with-session tr buf
-      (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
-      (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
-        (should (cl-some (lambda (s) (string-match-p "test agent_message" s)) texts))
-        (should (cl-some (lambda (s) (string-match-p "Tinkering..." s)) texts))))))
+  "The user prompt is echoed to the transport."
+  (agent-shell-to-go-test-bridge--with-session tr buf
+    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
+    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+    (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+      (should (cl-some (lambda (s) (string-match-p "test agent_message" s)) texts)))))
 
 (ert-deftest agent-shell-to-go-test-bridge-agent-message-forwarded ()
   "Agent message chunks are accumulated and forwarded to the transport on turn-complete."
@@ -392,31 +392,22 @@ verb so the assertion is exact."
 ;;; inbound hook handling
 
 (ert-deftest agent-shell-to-go-test-bridge-remote-message-not-echoed ()
-  "Remote-injected messages produce no [user] echo or spinner verb from `--on-send-command'.
-Exercises the `agent-shell-to-go--remote-queued' suppression: for a
-single remote prompt, init-finished is on its first fire so it sends
-`_Connected_' rather than a spinner verb, and `--on-send-command'
-takes the dequeue branch and sends nothing.  `Tinkering' from the
-pinned `agent-shell-to-go-spinner-verbs' must therefore be absent."
-  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
-    (agent-shell-to-go-test-bridge--with-session tr buf
-      (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
-            (channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf)))
-        (agent-shell-to-go-test-inbound-message
-         tr channel-id thread-id "testuser" "test agent_message")
-        (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-        (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
-          (should-not
-           (cl-some
-            (lambda (s) (string-match-p "\\[user\\].*test agent_message" s)) texts))
-          (should-not
-           (cl-some (lambda (s) (string-match-p "Tinkering..." s)) texts)))))))
+  "Remote-injected messages produce no [user] echo from `--on-send-command'.
+Exercises the `agent-shell-to-go--remote-queued' suppression: `--on-send-command'
+takes the dequeue branch and does not echo the message back."
+  (agent-shell-to-go-test-bridge--with-session tr buf
+    (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
+          (channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf)))
+      (agent-shell-to-go-test-inbound-message
+       tr channel-id thread-id "testuser" "test agent_message")
+      (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+        (should-not
+         (cl-some
+          (lambda (s) (string-match-p "\\[user\\].*test agent_message" s)) texts))))))
 
-(ert-deftest agent-shell-to-go-test-bridge-working-on-remote-prompt ()
-  "First init-finished sends `_Connected_'; later ones for remote prompts send spinner verbs.
-The test fixture enables bridge mode after the ACP session is established, so the
-first fire the bridge sees is the one triggered by the first remote prompt rather
-than initial connect.  Two prompts are sent to verify the transition."
+(ert-deftest agent-shell-to-go-test-bridge-spinner-sent-on-remote-prompt ()
+  "Remote-injected prompts receive a spinner verb via `--on-input-submitted'."
   (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
     (agent-shell-to-go-test-bridge--with-session tr buf
       (let ((thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf))
@@ -424,48 +415,19 @@ than initial connect.  Two prompts are sent to verify the transition."
         (agent-shell-to-go-test-inbound-message
          tr channel-id thread-id "testuser" "first remote message")
         (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-        (let* ((texts-1 (agent-shell-to-go-test-bridge--sent-texts tr))
-               (connected-1
-                (cl-count-if (lambda (s) (string-match-p "Connected" s)) texts-1))
-               (working-1
-                (cl-count-if (lambda (s) (string-match-p "Tinkering..." s)) texts-1)))
-          (should (= 1 connected-1))
-          (should (= 0 working-1)))
-        (agent-shell-to-go-test-inbound-message
-         tr channel-id thread-id "testuser" "second remote message")
-        (should
-         (agent-shell-to-go-test-bridge--wait-until
-          (lambda ()
-            (cl-some
-             (lambda (s) (string-match-p "Tinkering..." s))
-             (agent-shell-to-go-test-bridge--sent-texts tr)))
-          15))
-        (let* ((texts-2 (agent-shell-to-go-test-bridge--sent-texts tr))
-               (connected-2
-                (cl-count-if (lambda (s) (string-match-p "Connected" s)) texts-2)))
-          (should (= 1 connected-2)))))))
+        (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+          (should
+           (cl-some (lambda (s) (string-match-p "Tinkering\\.\\.\\." s)) texts)))))))
 
-(ert-deftest agent-shell-to-go-test-bridge-no-working-on-local-prompt ()
-  "Local prompts (typed via `agent-shell-insert') do not emit `_Working..._'.
-The `init-finished' gate on `--remote-queued' suppresses the liveness
-signal for locally-originated prompts; they already get `Processing...'
-from `--on-send-command'."
-  (agent-shell-to-go-test-bridge--with-session tr buf
-    ;; First local prompt — bridge subscribes after ACP init in the fixture,
-    ;; so the first init-finished it observes is the one triggered here.
-    ;; That fire sends `_Connected_'.
-    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
-    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-    ;; Second local prompt — connected-emitted is now t, --remote-queued
-    ;; is empty (this prompt came from `agent-shell-insert', not
-    ;; `--inject-message'), so neither `_Connected_' nor `_Working..._'
-    ;; should fire on this turn.
-    (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
-    (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
-    (let* ((texts (agent-shell-to-go-test-bridge--sent-texts tr))
-           (working-count
-            (cl-count-if (lambda (s) (string-match-p "Working" s)) texts)))
-      (should (= 0 working-count)))))
+(ert-deftest agent-shell-to-go-test-bridge-no-spinner-on-local-prompt ()
+  "Local prompts are echoed to the transport but do not produce a spinner verb."
+  (let ((agent-shell-to-go-spinner-verbs '("Tinkering")))
+    (agent-shell-to-go-test-bridge--with-session tr buf
+      (agent-shell-to-go-test-bridge--send-prompt buf "test agent_message")
+      (should (agent-shell-to-go-test-bridge--wait-for-ready tr))
+      (let ((texts (agent-shell-to-go-test-bridge--sent-texts tr)))
+        (should-not
+         (cl-some (lambda (s) (string-match-p "Tinkering\\.\\.\\." s)) texts))))))
 
 (ert-deftest agent-shell-to-go-test-bridge-help-command ()
   "!help sends a command reference synchronously without touching agent-shell.
@@ -758,8 +720,7 @@ Verifies inherit-state carries transport/channel/thread to the new buffer."
 
 (ert-deftest agent-shell-to-go-test-bridge-command-new-agent-success ()
   "!new-agent with a project name starts agent in projects-directory/name.
-Verifies bridge mode is enabled with inherited transport/channel, and that a
-Connected notice is sent via init-finished once the ACP handshake completes."
+Verifies bridge mode is enabled with inherited transport/channel."
   (agent-shell-to-go-test-bridge--with-session tr buf
     (let* ((channel (buffer-local-value 'agent-shell-to-go--channel-id buf))
            (projects-dir (make-temp-file "ag2g-test-projects" t))
@@ -791,14 +752,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
               (should agent-shell-to-go-mode)
               (should (eq agent-shell-to-go--transport tr))
               (should (equal agent-shell-to-go--channel-id channel))
-              (should agent-shell-to-go--thread-id))
-            (should
-             (agent-shell-to-go-test-bridge--wait-until
-              (lambda ()
-                (cl-some
-                 (lambda (text) (string-match-p "Connected" text))
-                 (agent-shell-to-go-test-bridge--sent-texts tr)))
-              15)))
+              (should agent-shell-to-go--thread-id)))
         (delete-directory projects-dir t)
         (when (and new-buf (buffer-live-p new-buf))
           (kill-buffer new-buf))))))

@@ -151,9 +151,10 @@ Keys: `start' (shown while running), `completed', `failed'."
 A random entry is picked each time, formatted as `_VERB..._' and sent
 both for locally-typed prompts (via `--on-send-command') and for
 remote-originated prompts (via `--on-init-finished')."
-  :type '(repeat string))
+  :type '(repeat string)
+  :group 'agent-shell-to-go)
 
-(defun agent-shell-to-go--get-random-spiner-verb ()
+(defun agent-shell-to-go--get-random-spinner-verb ()
   "Randomly get a spinner word from `agent-shell-to-go-spinner-verbs'."
   (format "_%s..._"
           (seq-elt

@@ -827,7 +827,7 @@ by `--on-init-finished' instead."
         (agent-shell-to-go--send
          (agent-shell-to-go-transport-format-user-message
           agent-shell-to-go--transport prompt))
-        (agent-shell-to-go--send (agent-shell-to-go--get-random-spiner-verb)))))
+        (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb)))))
   (setq agent-shell-to-go--current-agent-message nil)
   (apply orig-fn args))
 
@@ -850,7 +850,7 @@ once the ACP stack is up, so:
   (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id)
     (if agent-shell-to-go--connected-emitted
         (when agent-shell-to-go--remote-queued
-          (agent-shell-to-go--send (agent-shell-to-go--get-random-spiner-verb)))
+          (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb)))
       (agent-shell-to-go--send "_Connected_")
       (setq agent-shell-to-go--connected-emitted t))))
 

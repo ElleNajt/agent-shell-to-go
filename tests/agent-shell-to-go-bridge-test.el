@@ -92,6 +92,18 @@
   (expand-file-name ".venv/bin/python" agent-shell-to-go-test-bridge--mock-acp-root)
   "Python interpreter in mock-acp's virtual environment.")
 
+(defconst agent-shell-to-go-test-bridge--mock-acp-main
+  (expand-file-name "src/main.py" agent-shell-to-go-test-bridge--mock-acp-root)
+  "Absolute path to mock-acp main.py.")
+
+(defconst agent-shell-to-go-test-bridge--mock-acp-init-error-server
+  (expand-file-name "src/init_error_server.py" agent-shell-to-go-test-bridge--mock-acp-root)
+  "Absolute path to mock-acp init error server.")
+
+(defconst agent-shell-to-go-test-bridge--mock-acp-auth-error-server
+  (expand-file-name "src/auth_error_server.py" agent-shell-to-go-test-bridge--mock-acp-root)
+  "Absolute path to mock-acp auth error server.")
+
 ;;; Helpers
 
 (defun agent-shell-to-go-test-bridge--wait-until (pred &optional timeout-sec)
@@ -138,7 +150,8 @@ is responsible for cleanup (kill the buffer when done)."
   (let* ((default-directory agent-shell-to-go-test-bridge--mock-acp-root)
          (agent-shell-mock-agent-acp-command
           (list
-           agent-shell-to-go-test-bridge--python "tests/deps/mock-acp/src/main.py")))
+           agent-shell-to-go-test-bridge--python
+           agent-shell-to-go-test-bridge--mock-acp-main)))
     (agent-shell-start :config (agent-shell-mock-agent-make-agent-config))))
 
 (defmacro agent-shell-to-go-test-bridge--with-session (transport buf &rest body)
@@ -680,7 +693,8 @@ Verifies inherit-state carries transport/channel/thread to the new buffer."
     (let* ( ;; Make sure that we are using the right mock-acp server
            (agent-shell-mock-agent-acp-command
             (list
-             agent-shell-to-go-test-bridge--python "tests/deps/mock-acp/src/main.py"))
+             agent-shell-to-go-test-bridge--python
+             agent-shell-to-go-test-bridge--mock-acp-main))
            (old-channel-id (buffer-local-value 'agent-shell-to-go--channel-id buf))
            (old-thread-id (buffer-local-value 'agent-shell-to-go--thread-id buf)))
       (agent-shell-to-go-test-inbound-message
@@ -760,7 +774,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                    (let ((agent-shell-mock-agent-acp-command
                           (list
                            agent-shell-to-go-test-bridge--python
-                           "tests/deps/mock-acp/src/main.py"))
+                           agent-shell-to-go-test-bridge--mock-acp-main))
                          (default-directory
                           agent-shell-to-go-test-bridge--mock-acp-root))
                      (setq new-buf
@@ -800,7 +814,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                (let ((agent-shell-mock-agent-acp-command
                       (list
                        agent-shell-to-go-test-bridge--python
-                       "tests/deps/mock-acp/src/main.py"))
+                       agent-shell-to-go-test-bridge--mock-acp-main))
                      (default-directory agent-shell-to-go-test-bridge--mock-acp-root))
                  (setq new-buf
                        (agent-shell-start
@@ -872,7 +886,7 @@ Connected notice is sent via init-finished once the ACP handshake completes."
                    (let ((agent-shell-mock-agent-acp-command
                           (list
                            agent-shell-to-go-test-bridge--python
-                           "tests/deps/mock-acp/src/main.py"))
+                           agent-shell-to-go-test-bridge--mock-acp-main))
                          (default-directory
                           agent-shell-to-go-test-bridge--mock-acp-root))
                      (setq new-buf
@@ -1128,7 +1142,7 @@ Also verifies --on-init-client does not fire a false \"failed to start\" notice,
 since the client struct was created successfully before the RPC failed."
   (agent-shell-to-go-test-bridge--with-error-session
       tr buf
-      "tests/deps/mock-acp/src/init_error_server.py"
+      agent-shell-to-go-test-bridge--mock-acp-init-error-server
       nil
     (should
      (agent-shell-to-go-test-bridge--wait-until
@@ -1145,7 +1159,7 @@ since the client struct was created successfully before the RPC failed."
   "When the ACP server raises an auth-required error, --on-error forwards it to the transport."
   (agent-shell-to-go-test-bridge--with-error-session
       tr buf
-      "tests/deps/mock-acp/src/auth_error_server.py"
+      agent-shell-to-go-test-bridge--mock-acp-auth-error-server
       (lambda (config)
         (map-put! config :needs-authentication t)
         (map-put!

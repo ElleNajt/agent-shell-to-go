@@ -61,7 +61,7 @@ signal drawn from `agent-shell-to-go-spinner-verbs'.")
   "Subscription token for error events.")
 
 (defvar-local agent-shell-to-go--tool-calls nil
-  "Alist tracking tool calls by toolCallId (id → t if sent).")
+  "Alist tracking tool calls by toolCallId (id → (title . start-msg-id)).")
 
 (defvar-local agent-shell-to-go--remote-queued nil
   "List of prompts injected from a remote transport, to suppress echo on submit.")
@@ -882,6 +882,169 @@ once the ACP stack is up, so:
                     (concat agent-shell-to-go--current-agent-message text))))))))
   (apply orig-fn args))
 
+(defun agent-shell-to-go--bridge-on-tool-call-start
+    (tool-call-id tool-call raw-input content)
+  "Handle a tool-call start notification.
+TOOL-CALL-ID identifies the call; TOOL-CALL, RAW-INPUT, and CONTENT come from
+the event data.  Caches (title . start-msg-id) in
+`agent-shell-to-go--tool-calls'."
+  (let* ((title (map-elt tool-call :title))
+         (pseudo-update `((rawInput . ,raw-input) (content . ,content)))
+         (already-sent
+          (and tool-call-id (map-elt agent-shell-to-go--tool-calls tool-call-id))))
+    (when (and (not already-sent) title)
+      ;; Flush any remaining text to remote before starting a tool call message
+      (when (and agent-shell-to-go--current-agent-message
+                 (> (length agent-shell-to-go--current-agent-message) 0))
+        (agent-shell-to-go--send
+         (agent-shell-to-go-transport-format-agent-message
+          agent-shell-to-go--transport agent-shell-to-go--current-agent-message))
+        (setq agent-shell-to-go--current-agent-message nil))
+      (let* ((diff
+              (condition-case nil
+                  (agent-shell-to-go--extract-diff pseudo-update)
+                (error
+                 nil)))
+             (diff-text
+              (and diff
+                   (condition-case nil
+                       (agent-shell-to-go-transport-format-diff
+                        agent-shell-to-go--transport (car diff) (cdr diff))
+                     (error
+                      nil)))))
+        (let ((start-msg-id
+               (condition-case err
+                   (if (and diff-text (> (length diff-text) 0))
+                       (let* ((start-text
+                               (agent-shell-to-go-transport-format-tool-call-start
+                                agent-shell-to-go--transport title))
+                              (full (format "%s\n%s" start-text diff-text)))
+                         (if agent-shell-to-go-show-tool-output
+                             (agent-shell-to-go--send full '(:truncate t))
+                           (agent-shell-to-go--send start-text)))
+                     (agent-shell-to-go--send
+                      (agent-shell-to-go-transport-format-tool-call-start
+                       agent-shell-to-go--transport title)
+                      '(:truncate t)))
+                 (error
+                  (agent-shell-to-go--debug "tool_call send error: %s" err)
+                  nil))))
+          (setf (alist-get tool-call-id agent-shell-to-go--tool-calls)
+                (cons title start-msg-id)))))))
+
+(defun agent-shell-to-go--bridge-on-tool-call-finish
+    (tool-call-id tool-call raw-input content)
+  "Handle a tool-call completion or failure.
+TOOL-CALL-ID identifies the call; TOOL-CALL, RAW-INPUT, and CONTENT come from
+the event data.  Uses the title cached in `agent-shell-to-go--tool-calls'
+rather than re-reading it from the event."
+  (let* ((status (map-elt tool-call :status))
+         (pseudo-update `((rawInput . ,raw-input) (content . ,content)))
+         (cached (map-elt agent-shell-to-go--tool-calls tool-call-id))
+         (title (car cached))
+         (start-msg-id (cdr cached))
+         (content-text
+          (and content
+               (mapconcat (lambda (item)
+                            (or (map-elt (map-elt item 'content) 'text)
+                                (map-elt item 'text)
+                                ""))
+                          (if (vectorp content)
+                              (append content nil)
+                            (if (listp content)
+                                content
+                              nil))
+                          "\n")))
+         (output content-text)
+         (diff
+          (condition-case nil
+              (agent-shell-to-go--extract-diff pseudo-update)
+            (error
+             nil)))
+         (diff-text
+          (and diff
+               (condition-case nil
+                   (agent-shell-to-go-transport-format-diff
+                    agent-shell-to-go--transport (car diff) (cdr diff))
+                 (error
+                  nil)))))
+    (agent-shell-to-go--debug
+     "tool_call complete: id=%s status=%s start-msg-id=%s"
+     tool-call-id
+     status
+     start-msg-id)
+    (let* ((summary
+            (agent-shell-to-go-transport-format-tool-call-result
+             agent-shell-to-go--transport title status nil))
+           (target-channel
+            (or agent-shell-to-go--thread-id agent-shell-to-go--channel-id)))
+      (cond
+       ((and diff-text (> (length diff-text) 0))
+        (let* ((full (format "%s\n%s" summary diff-text))
+               (visible
+                (if agent-shell-to-go-show-tool-output
+                    full
+                  summary)))
+          (if start-msg-id
+              (progn
+                (agent-shell-to-go-transport-edit-message
+                 agent-shell-to-go--transport target-channel start-msg-id visible)
+                (unless agent-shell-to-go-show-tool-output
+                  (agent-shell-to-go--save-truncated-message
+                   agent-shell-to-go--transport
+                   agent-shell-to-go--channel-id
+                   start-msg-id
+                   full
+                   summary))
+                (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
+            (if agent-shell-to-go-show-tool-output
+                (agent-shell-to-go--send full '(:truncate t))
+              (let ((msg-id (agent-shell-to-go--send summary)))
+                (when msg-id
+                  (agent-shell-to-go--save-truncated-message
+                   agent-shell-to-go--transport
+                   agent-shell-to-go--channel-id
+                   msg-id
+                   full
+                   summary)))))))
+       ((and output (stringp output) (> (length output) 0))
+        (let* ((full
+                (agent-shell-to-go-transport-format-tool-call-result
+                 agent-shell-to-go--transport title status output))
+               (visible
+                (if agent-shell-to-go-show-tool-output
+                    full
+                  summary)))
+          (if start-msg-id
+              (progn
+                (agent-shell-to-go-transport-edit-message
+                 agent-shell-to-go--transport target-channel start-msg-id visible)
+                (unless agent-shell-to-go-show-tool-output
+                  (agent-shell-to-go--save-truncated-message
+                   agent-shell-to-go--transport
+                   agent-shell-to-go--channel-id
+                   start-msg-id
+                   full
+                   summary))
+                (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
+            (if agent-shell-to-go-show-tool-output
+                (agent-shell-to-go--send full '(:truncate t))
+              (let ((msg-id (agent-shell-to-go--send summary)))
+                (when msg-id
+                  (agent-shell-to-go--save-truncated-message
+                   agent-shell-to-go--transport
+                   agent-shell-to-go--channel-id
+                   msg-id
+                   full
+                   summary)))))))
+       (t
+        (if start-msg-id
+            (progn
+              (agent-shell-to-go-transport-edit-message
+               agent-shell-to-go--transport target-channel start-msg-id summary)
+              (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
+          (agent-shell-to-go--send summary)))))))
+
 (defun agent-shell-to-go--bridge-on-tool-call-update (event)
   "Handle a tool-call-update EVENT from agent-shell.
 Called via `agent-shell-subscribe-to' with the shell buffer current."
@@ -891,185 +1054,12 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
            (tool-call (map-elt data :tool-call))
            (status (map-elt tool-call :status))
            (raw-input (map-elt tool-call :raw-input))
-           (content (map-elt tool-call :content))
-           (title (map-elt tool-call :title))
-           (pseudo-update `((rawInput . ,raw-input) (content . ,content))))
+           (content (map-elt tool-call :content)))
       (if (member status '("completed" "failed"))
-          (let* ((content-text
-                  (and content
-                       (mapconcat (lambda (item)
-                                    (or (map-elt (map-elt item 'content) 'text)
-                                        (map-elt item 'text)
-                                        ""))
-                                  (if (vectorp content)
-                                      (append content nil)
-                                    (if (listp content)
-                                        content
-                                      nil))
-                                  "\n")))
-                 (output content-text)
-                 (diff
-                  (condition-case nil
-                      (agent-shell-to-go--extract-diff pseudo-update)
-                    (error
-                     nil)))
-                 (diff-text
-                  (and diff
-                       (condition-case nil
-                           (agent-shell-to-go-transport-format-diff
-                            agent-shell-to-go--transport (car diff) (cdr diff))
-                         (error
-                          nil))))
-                 (start-msg-id (map-elt agent-shell-to-go--tool-calls tool-call-id)))
-            (agent-shell-to-go--debug
-             "tool_call complete: id=%s status=%s start-msg-id=%s"
-             tool-call-id
-             status
-             start-msg-id)
-            (let* ((summary
-                    (agent-shell-to-go-transport-format-tool-call-result
-                     agent-shell-to-go--transport title status nil))
-                   (target-channel
-                    (or agent-shell-to-go--thread-id agent-shell-to-go--channel-id)))
-              (cond
-               ((and diff-text (> (length diff-text) 0))
-                (let* ((full (format "%s\n%s" summary diff-text))
-                       (visible
-                        (if agent-shell-to-go-show-tool-output
-                            full
-                          summary)))
-                  (if start-msg-id
-                      (progn
-                        (agent-shell-to-go-transport-edit-message
-                         agent-shell-to-go--transport
-                         target-channel
-                         start-msg-id
-                         visible)
-                        (unless agent-shell-to-go-show-tool-output
-                          (agent-shell-to-go--save-truncated-message
-                           agent-shell-to-go--transport
-                           agent-shell-to-go--channel-id
-                           start-msg-id
-                           full
-                           summary))
-                        (setf (alist-get tool-call-id agent-shell-to-go--tool-calls)
-                              nil))
-                    (if agent-shell-to-go-show-tool-output
-                        (agent-shell-to-go--send full '(:truncate t))
-                      (let ((msg-id (agent-shell-to-go--send summary)))
-                        (when msg-id
-                          (agent-shell-to-go--save-truncated-message
-                           agent-shell-to-go--transport
-                           agent-shell-to-go--channel-id
-                           msg-id
-                           full
-                           summary)))))))
-               ((and output (stringp output) (> (length output) 0))
-                (let* ((full
-                        (agent-shell-to-go-transport-format-tool-call-result
-                         agent-shell-to-go--transport title status output))
-                       (visible
-                        (if agent-shell-to-go-show-tool-output
-                            full
-                          summary)))
-                  (if start-msg-id
-                      (progn
-                        (agent-shell-to-go-transport-edit-message
-                         agent-shell-to-go--transport
-                         target-channel
-                         start-msg-id
-                         visible)
-                        (unless agent-shell-to-go-show-tool-output
-                          (agent-shell-to-go--save-truncated-message
-                           agent-shell-to-go--transport
-                           agent-shell-to-go--channel-id
-                           start-msg-id
-                           full
-                           summary))
-                        (setf (alist-get tool-call-id agent-shell-to-go--tool-calls)
-                              nil))
-                    (if agent-shell-to-go-show-tool-output
-                        (agent-shell-to-go--send full '(:truncate t))
-                      (let ((msg-id (agent-shell-to-go--send summary)))
-                        (when msg-id
-                          (agent-shell-to-go--save-truncated-message
-                           agent-shell-to-go--transport
-                           agent-shell-to-go--channel-id
-                           msg-id
-                           full
-                           summary)))))))
-               (t
-                (if start-msg-id
-                    (progn
-                      (agent-shell-to-go-transport-edit-message
-                       agent-shell-to-go--transport target-channel start-msg-id summary)
-                      (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
-                  (agent-shell-to-go--send summary))))))
-        ;; Tool call started — flush any buffered agent text first, then notify
-        (let* ((command (map-elt raw-input 'command))
-               (file-path (map-elt raw-input 'file_path))
-               (query (map-elt raw-input 'query))
-               (url (map-elt raw-input 'url))
-               (specific (or command file-path query url))
-               (already-sent
-                (and tool-call-id
-                     (map-elt agent-shell-to-go--tool-calls tool-call-id))))
-          (when (and (not already-sent) (or specific title))
-            (when (and agent-shell-to-go--current-agent-message
-                       (> (length agent-shell-to-go--current-agent-message) 0))
-              (agent-shell-to-go--send
-               (agent-shell-to-go-transport-format-agent-message
-                agent-shell-to-go--transport agent-shell-to-go--current-agent-message))
-              (setq agent-shell-to-go--current-agent-message nil))
-            (let* ((title-has-specific
-                    (and title specific (string-match-p (regexp-quote specific) title)))
-                   (display
-                    (cond
-                     (command
-                      command)
-                     (title-has-specific
-                      title)
-                     ((and file-path title)
-                      (format "%s: %s" title file-path))
-                     ((and query title)
-                      (format "%s: %s" title query))
-                     ((and url title)
-                      (format "%s: %s" title url))
-                     (specific
-                      specific)
-                     (t
-                      title)))
-                   (diff
-                    (condition-case nil
-                        (agent-shell-to-go--extract-diff pseudo-update)
-                      (error
-                       nil)))
-                   (diff-text
-                    (and diff
-                         (condition-case nil
-                             (agent-shell-to-go-transport-format-diff
-                              agent-shell-to-go--transport (car diff) (cdr diff))
-                           (error
-                            nil)))))
-              (let ((start-msg-id
-                     (condition-case err
-                         (if (and diff-text (> (length diff-text) 0))
-                             (let* ((start-text
-                                     (agent-shell-to-go-transport-format-tool-call-start
-                                      agent-shell-to-go--transport display))
-                                    (full (format "%s\n%s" start-text diff-text)))
-                               (if agent-shell-to-go-show-tool-output
-                                   (agent-shell-to-go--send full '(:truncate t))
-                                 (agent-shell-to-go--send start-text)))
-                           (agent-shell-to-go--send
-                            (agent-shell-to-go-transport-format-tool-call-start
-                             agent-shell-to-go--transport display)
-                            '(:truncate t)))
-                       (error
-                        (agent-shell-to-go--debug "tool_call send error: %s" err)
-                        nil))))
-                (setf (alist-get tool-call-id agent-shell-to-go--tool-calls)
-                      start-msg-id)))))))))
+          (agent-shell-to-go--bridge-on-tool-call-finish
+           tool-call-id tool-call raw-input content)
+        (agent-shell-to-go--bridge-on-tool-call-start
+         tool-call-id tool-call raw-input content)))))
 
 
 ; Hook registration 

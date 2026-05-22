@@ -167,13 +167,13 @@
                :msg-id (agent-shell-to-go-test--next-id transport))))
 
 (defun agent-shell-to-go-test-inbound-reaction
-    (transport channel msg-id user action added-p)
+    (transport channel msg-id user action added-p &optional thread-id)
   "Fire a reaction inbound event on TRANSPORT."
   (apply #'run-hook-with-args
          'agent-shell-to-go-reaction-hook
          (list :transport transport
                :channel-id channel
-               :thread-id nil
+               :thread-id thread-id
                :msg-id msg-id
                :user user
                :action action

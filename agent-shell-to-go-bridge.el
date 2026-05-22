@@ -57,6 +57,9 @@ polls on init-finished and turn-complete and dedupes internally).")
 (defvar-local agent-shell-to-go--tool-calls nil
   "Alist tracking tool calls by toolCallId (id → (title . start-msg-id)).")
 
+(defvar-local agent-shell-to-go--idle-subscription nil
+  "Subscription token for the `idle' event (persist cache on idle).")
+
 (defvar-local agent-shell-to-go--remote-queued nil
   "List of prompts injected from a remote transport, to suppress echo on submit.")
 
@@ -85,7 +88,18 @@ Keys: :transport :channel-id :thread-id.  Consumed (set to nil) on first use.")
   "Alist mapping project-path strings to cached ACP session data.
 Each entry: (PATH . (:sessions LIST :project-path PATH)).")
 
-; Buffer lookup 
+(defvar agent-shell-to-go--cache-cleanup-timer nil
+  "Global idle timer for cleaning up old session cache files.")
+
+(unless agent-shell-to-go--cache-cleanup-timer
+  (setq agent-shell-to-go--cache-cleanup-timer
+        (run-with-idle-timer
+         600 t
+         (lambda ()
+           (dolist (transport (agent-shell-to-go--all-transport-objects))
+             (agent-shell-to-go--cache-cleanup-old-sessions transport))))))
+
+; Buffer lookup
 
 (defun agent-shell-to-go--bridge-active-buffers ()
   "Return the list of active agent-shell-to-go buffers."
@@ -161,7 +175,44 @@ Each entry: (PATH . (:sessions LIST :project-path PATH)).")
      ((and raw-input (map-elt raw-input 'diff))
       (agent-shell-to-go--parse-unified-diff (map-elt raw-input 'diff))))))
 
-; helpers 
+; helpers
+
+(defun agent-shell-to-go--send-tool-call (title &optional output)
+  "Send a new tool call message and cache TITLE and OUTPUT.
+The cache is always populated so reactions (hide/expand) work.  When
+`agent-shell-to-go-show-tool-output' is non-nil, the full TITLE + OUTPUT is
+shown; otherwise only TITLE."
+  (let* ((display (if (and output (not (string-empty-p output))
+                           agent-shell-to-go-show-tool-output)
+                      (concat title "\n" output)
+                    title))
+         (msg-id (agent-shell-to-go--send display)))
+    (when msg-id
+      (agent-shell-to-go--cache-put-entry
+       agent-shell-to-go--transport
+       agent-shell-to-go--channel-id
+       agent-shell-to-go--thread-id
+       msg-id
+       title
+       (or output "")))
+    msg-id))
+
+(defun agent-shell-to-go--edit-tool-call (msg-id title &optional output)
+  "Edit MSG-ID and update its cache entry with TITLE and OUTPUT."
+  (let* ((display (if (and output (not (string-empty-p output))
+                           agent-shell-to-go-show-tool-output)
+                      (concat title "\n" output)
+                    title))
+         (target (or agent-shell-to-go--thread-id agent-shell-to-go--channel-id)))
+    (agent-shell-to-go-transport-edit-message
+     agent-shell-to-go--transport target msg-id display)
+    (agent-shell-to-go--cache-put-entry
+     agent-shell-to-go--transport
+     agent-shell-to-go--channel-id
+     agent-shell-to-go--thread-id
+     msg-id
+     title
+     (or output ""))))
 
 (defun agent-shell-to-go--send (text &optional options)
   "Send TEXT via the buffer-local transport.
@@ -173,6 +224,15 @@ OPTIONS is forwarded to `agent-shell-to-go-transport-send-text'."
      agent-shell-to-go--thread-id
      text
      options)))
+
+(defun agent-shell-to-go--save-cache-for-buffer ()
+  "Save the session cache for the current buffer's transport and thread."
+  (when (and agent-shell-to-go--transport
+             agent-shell-to-go--thread-id)
+    (agent-shell-to-go--cache-save-session
+     agent-shell-to-go--transport
+     agent-shell-to-go--channel-id
+     agent-shell-to-go--thread-id)))
 
 (defun agent-shell-to-go--inject-message (text)
   "Inject TEXT into the current agent-shell buffer as if typed locally."
@@ -283,25 +343,15 @@ where each entry is a plist with :kind and :option-id."
 (defun agent-shell-to-go--cmd-info (_args buffer)
   (let* ((state agent-shell--state)
          (session-id (map-nested-elt state '(:session :id)))
-         (mode-id (map-nested-elt state '(:session :mode-id)))
-         (truncated-count
-          (let ((dir
-                 (expand-file-name (format "truncated/%s/"
-                                           agent-shell-to-go--channel-id)
-                                   (agent-shell-to-go-transport-storage-root
-                                    agent-shell-to-go--transport))))
-            (if (file-directory-p dir)
-                (length (directory-files dir nil "\\.txt$"))
-              0))))
+         (mode-id (map-nested-elt state '(:session :mode-id))))
     (agent-shell-to-go--send
      (format
-      "*Debug*\nBuffer: `%s`\nThread: `%s`\nChannel: `%s`\nSession: `%s`\nMode: `%s`\nTruncated: %d"
+      "*Debug*\nBuffer: `%s`\nThread: `%s`\nChannel: `%s`\nSession: `%s`\nMode: `%s`"
       (buffer-name buffer)
       agent-shell-to-go--thread-id
       agent-shell-to-go--channel-id
       (or session-id "none")
-      (or mode-id "default")
-      truncated-count))))
+      (or mode-id "default")))))
 
 (defun agent-shell-to-go--cmd-stop (_args _buffer)
   (condition-case err
@@ -833,9 +883,15 @@ transport) are not echoed back.  Dequeue happens after `orig-fn' so that
 (defun agent-shell-to-go--on-input-submitted (_event)
   "Handle input-submitted event.
 Send a random spinner verb for remote-originated prompts only."
-  (when (and agent-shell-to-go-mode agent-shell-to-go--thread-id
+  (when (and agent-shell-to-go-mode
+             agent-shell-to-go--thread-id
              agent-shell-to-go--remote-queued)
     (agent-shell-to-go--send (agent-shell-to-go--get-random-spinner-verb))))
+
+(defun agent-shell-to-go--on-idle (_event)
+  "Handle idle event.  Persist the session cache."
+  (when agent-shell-to-go-mode
+    (agent-shell-to-go--save-cache-for-buffer)))
 
 (defun agent-shell-to-go--on-error (event)
   "Handle error event.  Forward the error message to the remote transport."
@@ -884,31 +940,21 @@ the event data.  Caches (title . start-msg-id) in
           agent-shell-to-go--transport agent-shell-to-go--current-agent-message))
         (setq agent-shell-to-go--current-agent-message nil))
       (let* ((diff
-              (condition-case nil
-                  (agent-shell-to-go--extract-diff pseudo-update)
-                (error
-                 nil)))
+              (ignore-errors
+                (agent-shell-to-go--extract-diff pseudo-update)))
              (diff-text
               (and diff
-                   (condition-case nil
-                       (agent-shell-to-go-transport-format-diff
-                        agent-shell-to-go--transport (car diff) (cdr diff))
-                     (error
-                      nil)))))
+                   (ignore-errors
+                     (agent-shell-to-go-transport-format-diff
+                      agent-shell-to-go--transport (car diff) (cdr diff)))))
+             (start-text
+              (agent-shell-to-go-transport-format-tool-call-start
+               agent-shell-to-go--transport title)))
         (let ((start-msg-id
                (condition-case err
                    (if (and diff-text (> (length diff-text) 0))
-                       (let* ((start-text
-                               (agent-shell-to-go-transport-format-tool-call-start
-                                agent-shell-to-go--transport title))
-                              (full (format "%s\n%s" start-text diff-text)))
-                         (if agent-shell-to-go-show-tool-output
-                             (agent-shell-to-go--send full '(:truncate t))
-                           (agent-shell-to-go--send start-text)))
-                     (agent-shell-to-go--send
-                      (agent-shell-to-go-transport-format-tool-call-start
-                       agent-shell-to-go--transport title)
-                      '(:truncate t)))
+                       (agent-shell-to-go--send-tool-call start-text diff-text)
+                     (agent-shell-to-go--send-tool-call start-text))
                  (error
                   (agent-shell-to-go--debug "tool_call send error: %s" err)
                   nil))))
@@ -940,93 +986,40 @@ rather than re-reading it from the event."
                           "\n")))
          (output content-text)
          (diff
-          (condition-case nil
-              (agent-shell-to-go--extract-diff pseudo-update)
-            (error
-             nil)))
+          (ignore-errors
+            (agent-shell-to-go--extract-diff pseudo-update)))
          (diff-text
           (and diff
-               (condition-case nil
-                   (agent-shell-to-go-transport-format-diff
-                    agent-shell-to-go--transport (car diff) (cdr diff))
-                 (error
-                  nil)))))
+               (ignore-errors
+                 (agent-shell-to-go-transport-format-diff
+                  agent-shell-to-go--transport (car diff) (cdr diff))))))
     (agent-shell-to-go--debug
      "tool_call complete: id=%s status=%s start-msg-id=%s"
      tool-call-id
      status
      start-msg-id)
-    (let* ((summary
-            (agent-shell-to-go-transport-format-tool-call-result
-             agent-shell-to-go--transport title status nil))
-           (target-channel
-            (or agent-shell-to-go--thread-id agent-shell-to-go--channel-id)))
+    (let ((summary
+           (agent-shell-to-go-transport-format-tool-call-result
+            agent-shell-to-go--transport title status nil)))
       (cond
        ((and diff-text (> (length diff-text) 0))
-        (let* ((full (format "%s\n%s" summary diff-text))
-               (visible
-                (if agent-shell-to-go-show-tool-output
-                    full
-                  summary)))
-          (if start-msg-id
-              (progn
-                (agent-shell-to-go-transport-edit-message
-                 agent-shell-to-go--transport target-channel start-msg-id visible)
-                (unless agent-shell-to-go-show-tool-output
-                  (agent-shell-to-go--save-truncated-message
-                   agent-shell-to-go--transport
-                   agent-shell-to-go--channel-id
-                   start-msg-id
-                   full
-                   summary))
-                (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
-            (if agent-shell-to-go-show-tool-output
-                (agent-shell-to-go--send full '(:truncate t))
-              (let ((msg-id (agent-shell-to-go--send summary)))
-                (when msg-id
-                  (agent-shell-to-go--save-truncated-message
-                   agent-shell-to-go--transport
-                   agent-shell-to-go--channel-id
-                   msg-id
-                   full
-                   summary)))))))
+        (if start-msg-id
+            (progn
+              (agent-shell-to-go--edit-tool-call start-msg-id summary diff-text)
+              (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
+          (agent-shell-to-go--send-tool-call summary diff-text)))
        ((and output (stringp output) (> (length output) 0))
-        (let* ((full
-                (agent-shell-to-go-transport-format-tool-call-result
-                 agent-shell-to-go--transport title status output))
-               (visible
-                (if agent-shell-to-go-show-tool-output
-                    full
-                  summary)))
-          (if start-msg-id
-              (progn
-                (agent-shell-to-go-transport-edit-message
-                 agent-shell-to-go--transport target-channel start-msg-id visible)
-                (unless agent-shell-to-go-show-tool-output
-                  (agent-shell-to-go--save-truncated-message
-                   agent-shell-to-go--transport
-                   agent-shell-to-go--channel-id
-                   start-msg-id
-                   full
-                   summary))
-                (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
-            (if agent-shell-to-go-show-tool-output
-                (agent-shell-to-go--send full '(:truncate t))
-              (let ((msg-id (agent-shell-to-go--send summary)))
-                (when msg-id
-                  (agent-shell-to-go--save-truncated-message
-                   agent-shell-to-go--transport
-                   agent-shell-to-go--channel-id
-                   msg-id
-                   full
-                   summary)))))))
+        (if start-msg-id
+            (progn
+              (agent-shell-to-go--edit-tool-call start-msg-id summary output)
+              (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
+          (agent-shell-to-go--send-tool-call summary output)))
        (t
         (if start-msg-id
             (progn
-              (agent-shell-to-go-transport-edit-message
-               agent-shell-to-go--transport target-channel start-msg-id summary)
+              (agent-shell-to-go--edit-tool-call start-msg-id summary)
               (setf (alist-get tool-call-id agent-shell-to-go--tool-calls) nil))
-          (agent-shell-to-go--send summary)))))))
+          (agent-shell-to-go--send-tool-call summary)))))))
 
 (defun agent-shell-to-go--bridge-on-tool-call-update (event)
   "Handle a tool-call-update EVENT from agent-shell.
@@ -1087,8 +1080,21 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
             (or (map-elt inherited :thread-id)
                 (agent-shell-to-go-transport-start-thread
                  transport agent-shell-to-go--channel-id (buffer-name))))
+      ;; Load session cache when resuming a previous thread
+      (when (map-elt inherited :thread-id)
+        (agent-shell-to-go--cache-load-session
+         transport agent-shell-to-go--channel-id agent-shell-to-go--thread-id))
+
       ;; Track buffer
       (add-to-list 'agent-shell-to-go--active-buffers (current-buffer))
+
+      ;; Idle timer to periodically persist the cache (crash protection)
+      ;; Subscribe to shell-maker's idle event
+      (setq agent-shell-to-go--idle-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :event 'idle
+             :on-event #'agent-shell-to-go--on-idle))
 
       ;; Save and install permission responder
       (setq agent-shell-to-go--prev-permission-responder
@@ -1158,7 +1164,8 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
             agent-shell-to-go--error-subscription
             agent-shell-to-go--session-title-subscription
             agent-shell-to-go--ready-subscription
-            agent-shell-to-go--tool-call-update-subscription))
+            agent-shell-to-go--tool-call-update-subscription
+            agent-shell-to-go--idle-subscription))
     (when sub
       (ignore-errors
         (agent-shell-unsubscribe :subscription sub))))
@@ -1168,7 +1175,9 @@ Called via `agent-shell-subscribe-to' with the shell buffer current."
    agent-shell-to-go--error-subscription nil
    agent-shell-to-go--session-title-subscription nil
    agent-shell-to-go--ready-subscription nil
-   agent-shell-to-go--tool-call-update-subscription nil)
+   agent-shell-to-go--tool-call-update-subscription nil
+   agent-shell-to-go--idle-subscription nil)
+  (agent-shell-to-go--save-cache-for-buffer)
   (when (and agent-shell-to-go--thread-id
              agent-shell-to-go--transport
              (not agent-shell-to-go--restarting))

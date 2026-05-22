@@ -177,15 +177,12 @@ See each transport's setup doc for how to register slash commands.
 | 🔓 or ⭐ | Always allow |
 | ❌ or 👎 | Reject |
 
-**Message visibility:**
-
-Long messages are automatically truncated to 500 characters. Add 👀 to see more, 📕 or 📖 for the full text.
+**Tool call visibility** (only applies to tool call messages, not agent replies):
 
 | Emoji | Action |
 |-------|--------|
 | 🙈 or 🔕 | Hide message (remove to unhide) |
-| 👀 | Show ~500 chars (remove to collapse) |
-| 📕 or 📖 | Show full output (remove to collapse) |
+| 👀 | Expand full output (remove to collapse) |
 
 ## Customization
 

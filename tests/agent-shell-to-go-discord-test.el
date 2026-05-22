@@ -84,7 +84,6 @@
 ;;     - send-text-returns-message-id: returns the message ID from the API
 ;;     - send-text-uses-thread-id-as-target: posts to thread-id when provided
 ;;     - send-text-uses-channel-when-no-thread: posts to channel-id when thread is nil
-;;     - send-text-truncated-saves-full-text: :truncate saves full text for later expansion
 ;;
 ;;   agent-shell-to-go-transport-edit-message
 ;;     - edit-message: sends PATCH and returns the message ID
@@ -181,21 +180,19 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
 
 (ert-deftest agent-shell-to-go-test-discord-emoji-to-action-known ()
   "Registered emoji names map to the correct canonical action."
-  (should (eq 'hide (agent-shell-to-go--discord-emoji-to-action "see_no_evil")))
-  (should (eq 'hide (agent-shell-to-go--discord-emoji-to-action "no_bell")))
-  (should (eq 'expand-truncated (agent-shell-to-go--discord-emoji-to-action "eyes")))
-  (should (eq 'expand-full (agent-shell-to-go--discord-emoji-to-action "open_book")))
-  (should (eq 'expand-full (agent-shell-to-go--discord-emoji-to-action "green_book")))
+  (should (eq 'hide (agent-shell-to-go--discord-emoji-to-action "🙈")))
+  (should (eq 'hide (agent-shell-to-go--discord-emoji-to-action "🔕")))
+  (should (eq 'expand (agent-shell-to-go--discord-emoji-to-action "👀")))
   (should
    (eq
-    'permission-allow (agent-shell-to-go--discord-emoji-to-action "white_check_mark")))
+    'permission-allow (agent-shell-to-go--discord-emoji-to-action "✅")))
   (should
-   (eq 'permission-allow (agent-shell-to-go--discord-emoji-to-action "thumbsup")))
-  (should (eq 'permission-always (agent-shell-to-go--discord-emoji-to-action "unlock")))
-  (should (eq 'permission-always (agent-shell-to-go--discord-emoji-to-action "star")))
-  (should (eq 'permission-reject (agent-shell-to-go--discord-emoji-to-action "x")))
+   (eq 'permission-allow (agent-shell-to-go--discord-emoji-to-action "👍")))
+  (should (eq 'permission-always (agent-shell-to-go--discord-emoji-to-action "🔓")))
+  (should (eq 'permission-always (agent-shell-to-go--discord-emoji-to-action "⭐")))
+  (should (eq 'permission-reject (agent-shell-to-go--discord-emoji-to-action "❌")))
   (should
-   (eq 'permission-reject (agent-shell-to-go--discord-emoji-to-action "thumbsdown"))))
+   (eq 'permission-reject (agent-shell-to-go--discord-emoji-to-action "👎"))))
 
 (ert-deftest agent-shell-to-go-test-discord-emoji-to-action-unknown ()
   "Unknown or nil emoji names return nil."
@@ -489,9 +486,9 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
      '((channel_id . "C1")
        (message_id . "M1")
        (user_id . "USER1")
-       (emoji . ((name . "eyes")))))
+       (emoji . ((name . "👀")))))
     (should received)
-    (should (eq 'expand-truncated (plist-get received :action)))
+    (should (eq 'expand (plist-get received :action)))
     (should (eq t (plist-get received :added-p)))))
 
 (ert-deftest agent-shell-to-go-test-discord-dispatch-reaction-remove-fires-hook ()
@@ -506,7 +503,7 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
      '((channel_id . "C1")
        (message_id . "M1")
        (user_id . "USER1")
-       (emoji . ((name . "eyes")))))
+       (emoji . ((name . "👀")))))
     (should received)
     (should (null (plist-get received :added-p)))))
 
@@ -680,16 +677,6 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
                  '((id . "M1")))))
       (agent-shell-to-go-transport-send-text tr "CHAN1" nil "hi"))
     (should (string-match-p "CHAN1" called-endpoint))))
-
-(ert-deftest agent-shell-to-go-test-discord-send-text-truncated-saves-full-text ()
-  "send-text with :truncate saves the full text to storage for later expansion."
-  (with-discord-temp-storage
-    (let* ((tr (agent-shell-to-go-test-discord--make))
-           (long-text (make-string 600 ?a)))
-      (with-mocked-discord-api `((("POST" . "/channels/C1/messages") . ((id . "M1"))))
-        (agent-shell-to-go-transport-send-text tr "C1" nil long-text '(:truncate t)))
-      (should
-       (equal long-text (agent-shell-to-go--load-truncated-message tr "C1" "M1"))))))
 
 ;; edit-message
 

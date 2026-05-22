@@ -74,7 +74,6 @@
 ;;     - send-text-returns-ts: returns the message timestamp from the API
 ;;     - send-text-uses-thread-ts: posts with thread_ts when thread-id provided
 ;;     - send-text-uses-channel-when-no-thread: posts to channel only when thread is nil
-;;     - send-text-truncated-saves-full-text: :truncate saves full text for later expansion
 ;;
 ;;   agent-shell-to-go-transport-edit-message
 ;;     - edit-message-calls-chat-update: calls chat.update and returns t on success
@@ -170,9 +169,9 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
   "Registered Slack emoji names map to the correct canonical action."
   (should (eq 'hide (agent-shell-to-go--slack-emoji-to-action "see_no_evil")))
   (should (eq 'hide (agent-shell-to-go--slack-emoji-to-action "no_bell")))
-  (should (eq 'expand-truncated (agent-shell-to-go--slack-emoji-to-action "eyes")))
-  (should (eq 'expand-full (agent-shell-to-go--slack-emoji-to-action "book")))
-  (should (eq 'expand-full (agent-shell-to-go--slack-emoji-to-action "open_book")))
+  (should (eq 'expand (agent-shell-to-go--slack-emoji-to-action "eyes")))
+  (should (null (agent-shell-to-go--slack-emoji-to-action "book")))
+  (should (null (agent-shell-to-go--slack-emoji-to-action "open_book")))
   (should
    (eq 'permission-allow (agent-shell-to-go--slack-emoji-to-action "white_check_mark")))
   (should (eq 'permission-allow (agent-shell-to-go--slack-emoji-to-action "+1")))
@@ -332,7 +331,7 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
                  (reaction . "eyes")
                  (item . ((ts . "TS1") (channel . "C1")))))))
     (should received)
-    (should (eq 'expand-truncated (plist-get received :action)))
+    (should (eq 'expand (plist-get received :action)))
     (should (eq t (plist-get received :added-p)))))
 
 (ert-deftest agent-shell-to-go-test-slack-dispatch-event-reaction-removed-fires-hook ()
@@ -573,17 +572,6 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
     (should (equal "C1" (map-elt sent-data 'channel)))
     (should (null (map-elt sent-data 'thread_ts)))))
 
-(ert-deftest agent-shell-to-go-test-slack-send-text-truncated-saves-full-text ()
-  "send-text with :truncate saves the full text to storage for later expansion."
-  (with-slack-temp-storage
-    (let* ((tr (agent-shell-to-go-test-slack--make))
-           (long-text (make-string 600 ?a)))
-      (with-mocked-slack-api
-          `((("POST" . "chat.postMessage") . ((ok . t) (ts . "TS1"))))
-        (agent-shell-to-go-transport-send-text tr "C1" nil long-text '(:truncate t)))
-      (should
-       (equal long-text (agent-shell-to-go--load-truncated-message tr "C1" "TS1"))))))
-
 ;; edit-message
 
 (ert-deftest agent-shell-to-go-test-slack-edit-message-calls-chat-update ()
@@ -720,7 +708,7 @@ RESPONSES is an alist keyed by (METHOD . ENDPOINT); unmatched calls return nil."
                .
                [((name . "eyes") (count . 1)) ((name . "x") (count . 1))]))))))
       (let ((result (agent-shell-to-go-transport-get-reactions tr "C1" "TS1")))
-        (should (member 'expand-truncated result))
+        (should (member 'expand result))
         (should (member 'permission-reject result))))))
 
 ;; upload-file

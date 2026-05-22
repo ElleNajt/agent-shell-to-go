@@ -62,12 +62,11 @@ If nil, NO ONE can interact (secure by default)."
   :group 'agent-shell-to-go)
 
 (defcustom agent-shell-to-go-discord-reaction-map
-  '((hide . ("see_no_evil" "no_bell" "🙈" "🔕"))
-    (expand-truncated . ("eyes" "👀"))
-    (expand-full . ("open_book" "green_book" "📖" "📗"))
-    (permission-allow . ("white_check_mark" "thumbsup" "✅" "👍"))
-    (permission-always . ("unlock" "star" "🔓" "⭐"))
-    (permission-reject . ("x" "thumbsdown" "❌" "👎")))
+  '((hide . ("🙈" "🔕"))
+    (expand . ("👀"))
+    (permission-allow . ("✅" "👍"))
+    (permission-always . ("🔓" "⭐"))
+    (permission-reject . ("❌" "👎")))
   "Map canonical action symbols to Discord emoji names.
 Values are matched against emoji.name in Gateway events.  This includes both
 custom server emoji names (ASCII shortcodes like \"thumbsup\") and standard
@@ -351,27 +350,16 @@ Returns the parsed JSON response or nil."
      text
      &optional
      options)
-  "Post TEXT to Discord THREAD-ID (or CHANNEL-ID if no thread).
-Options plist supports :truncate."
-  (let* ((truncate (map-elt options :truncate))
-         ;; Thread channel IS the destination in Discord
+  "Post TEXT to Discord THREAD-ID (or CHANNEL-ID if no thread)."
+  (let* ( ;; Thread channel IS the destination in Discord
          (target (or thread-id channel-id))
-         (display
-          (if truncate
-              (agent-shell-to-go--truncate-text text 500)
-            text))
-         (was-truncated (and truncate (not (equal text display))))
-         (safe (agent-shell-to-go--discord-truncate-content display)))
+         (safe (agent-shell-to-go--discord-truncate-content text)))
     (condition-case err
         (let* ((resp
                 (agent-shell-to-go--discord-api
                  "POST" (format "/channels/%s/messages" target)
-                 `((content . ,safe))))
-               (msg-id (map-elt resp 'id)))
-          (when (and was-truncated msg-id)
-            (agent-shell-to-go--save-truncated-message
-             transport channel-id msg-id text))
-          msg-id)
+                 `((content . ,safe)))))
+          (map-elt resp 'id))
       (error
        (agent-shell-to-go--debug "discord send-text error: %s" err)
        nil))))

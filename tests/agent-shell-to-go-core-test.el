@@ -14,10 +14,12 @@
 ;; APIs under test:
 ;;
 ;;   agent-shell-to-go--handle-presentation-reaction
-;;     - presentation-hide-unhide: hide reaction edits message; removal restores original
-;;     - presentation-expand-truncated: expand-truncated shows first 500 chars with hint
-;;     - presentation-expand-full: expand-full shows full text
-;;     - presentation-collapse-restores: removing expand reaction restores collapsed form
+;;     - presentation-hide-expand: hide/edit reactions on cached tool call messages
+;;     - presentation-cache-miss: reactions on non-cached messages append a note
+;;
+;;   agent-shell-to-go--tool-call-cache
+;;     - cache-put-get: put entry then retrieve it
+;;     - cache-persistence: save session to disk and load it back
 ;;
 ;;   agent-shell-to-go-register-transport / agent-shell-to-go-get-transport
 ;;     - transport-registry: transports registered and retrieved by name
@@ -34,65 +36,100 @@
 
 (require 'mock-transport)
 
-(ert-deftest agent-shell-to-go-test-core-presentation-hide-unhide ()
-  "Presentation reaction handler edits the message and restores it on removal."
+;;; Presentation reaction tests
+
+(ert-deftest agent-shell-to-go-test-core-presentation-hide-add ()
+  "hide reaction on a cached tool call message edits to '_message hidden_'."
   (let* ((tr (agent-shell-to-go-test-make))
-         (id (agent-shell-to-go-transport-send-text tr "C1" nil "original text")))
-    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'hide t)
+         (id (agent-shell-to-go-transport-send-text tr "C1" "T1" "✅ edit completed"))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go--cache-put-entry tr "C1" "T1" id "✅ edit completed" "the diff output")
+    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'hide t "T1")
     (should
      (string-match-p
-      "hidden" (or (agent-shell-to-go-transport-get-message-text tr "C1" id) "")))
-    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'hide nil)
+      "hidden" (or (agent-shell-to-go-transport-get-message-text tr "C1" id) "")))))
+
+(ert-deftest agent-shell-to-go-test-core-presentation-hide-remove ()
+  "Removing hide restores the collapsed title form from cache."
+  (let* ((tr (agent-shell-to-go-test-make))
+         (id (agent-shell-to-go-transport-send-text tr "C1" "T1" "_message hidden_"))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go--cache-put-entry tr "C1" "T1" id "✅ edit completed" "the diff output")
+    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'hide nil "T1")
     (should
      (equal
-      "original text" (agent-shell-to-go-transport-get-message-text tr "C1" id)))))
+      "✅ edit completed" (agent-shell-to-go-transport-get-message-text tr "C1" id)))))
 
-(ert-deftest agent-shell-to-go-test-core-presentation-expand-truncated ()
-  "expand-truncated shows first 500 chars with hint when full text is longer."
+(ert-deftest agent-shell-to-go-test-core-presentation-expand-add ()
+  "expand reaction on a cached tool call message shows title + output."
   (let* ((tr (agent-shell-to-go-test-make))
-         (full (make-string 1000 ?z))
-         (id (agent-shell-to-go-transport-send-text tr "C1" nil "collapsed"))
-         (agent-shell-to-go-storage-base-dir (make-temp-file "astg-test-" t)))
+         (id (agent-shell-to-go-transport-send-text tr "C1" "T1" "✅ edit completed"))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go--cache-put-entry tr "C1" "T1" id "✅ edit completed" "the diff output")
+    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'expand t "T1")
+    (should
+     (string-match-p
+      "the diff output" (or (agent-shell-to-go-transport-get-message-text tr "C1" id) "")))))
+
+(ert-deftest agent-shell-to-go-test-core-presentation-expand-remove ()
+  "Removing expand restores the collapsed title form from cache."
+  (let* ((tr (agent-shell-to-go-test-make))
+         (id (agent-shell-to-go-transport-send-text tr "C1" "T1" "✅ edit completed\nthe diff output"))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go--cache-put-entry tr "C1" "T1" id "✅ edit completed" "the diff output")
+    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'expand nil "T1")
+    (should
+     (equal
+      "✅ edit completed" (agent-shell-to-go-transport-get-message-text tr "C1" id)))))
+
+(ert-deftest agent-shell-to-go-test-core-presentation-cache-miss ()
+  "Reaction on a non-cached message appends an ignored note."
+  (let* ((tr (agent-shell-to-go-test-make))
+         (id (agent-shell-to-go-transport-send-text tr "C1" "T1" "some random message"))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'hide t "T1")
+    (should
+     (string-match-p
+      "no cache entry"
+      (or (agent-shell-to-go-transport-get-message-text tr "C1" id) "")))))
+
+;;; Cache infrastructure
+
+(ert-deftest agent-shell-to-go-test-core-cache-put-get ()
+  "Cache put-entry followed by get-entry returns the stored data."
+  (let* ((tr (agent-shell-to-go-test-make))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
+    (agent-shell-to-go--cache-put-entry tr "C1" "T1" "msg-1" "✅ title" "body")
+    (let ((entry (agent-shell-to-go--cache-get-entry tr "C1" "T1" "msg-1")))
+      (should entry)
+      (should (equal "✅ title" (nth 0 entry)))
+      (should (equal "body" (nth 1 entry)))
+      (should (null (nth 2 entry))))))  ;; expanded-p defaults to nil
+
+(ert-deftest agent-shell-to-go-test-core-cache-persistence ()
+  "Session cache survives save/load cycle."
+  (let* ((tr (agent-shell-to-go-test-make))
+         (tmpdir (make-temp-file "astg-cache-test-" t))
+         (agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (agent-shell-to-go--save-truncated-message tr "C1" id full "collapsed")
-          (agent-shell-to-go-test-inbound-reaction
-           tr "C1" id "testuser" 'expand-truncated t)
-          (let ((text (agent-shell-to-go-transport-get-message-text tr "C1" id)))
-            (should (string-prefix-p (make-string 500 ?z) text))
-            (should (string-match-p "expand further" text))))
-      (delete-directory agent-shell-to-go-storage-base-dir t))))
+          ;; Stub storage-root so we control where the file goes
+          (cl-letf (((symbol-function 'agent-shell-to-go-transport-storage-root)
+                     (lambda (_) tmpdir)))
+            (agent-shell-to-go--cache-put-entry tr "C1" "T1" "msg-1" "title" "output")
+            (agent-shell-to-go--cache-save-session tr "C1" "T1")
+            ;; Verify file exists
+            (should (file-exists-p (expand-file-name "sessions/T1.el" tmpdir)))
+            ;; Reset cache and load back
+            (setq agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal))
+            (agent-shell-to-go--cache-load-session tr "C1" "T1")
+            (let ((entry (agent-shell-to-go--cache-get-entry tr "C1" "T1" "msg-1")))
+              (should entry)
+              (should (equal "title" (nth 0 entry)))
+              (should (equal "output" (nth 1 entry))))))
+      (delete-directory tmpdir t))))
 
-(ert-deftest agent-shell-to-go-test-core-presentation-expand-full ()
-  "expand-full shows full text when within message length limit."
-  (let* ((tr (agent-shell-to-go-test-make))
-         (full "complete output text")
-         (id (agent-shell-to-go-transport-send-text tr "C1" nil "collapsed"))
-         (agent-shell-to-go-storage-base-dir (make-temp-file "astg-test-" t)))
-    (unwind-protect
-        (progn
-          (agent-shell-to-go--save-truncated-message tr "C1" id full "collapsed")
-          (agent-shell-to-go-test-inbound-reaction tr "C1" id "testuser" 'expand-full t)
-          (should
-           (equal full (agent-shell-to-go-transport-get-message-text tr "C1" id))))
-      (delete-directory agent-shell-to-go-storage-base-dir t))))
-
-(ert-deftest agent-shell-to-go-test-core-presentation-collapse-restores ()
-  "Removing expand reaction restores the collapsed form."
-  (let* ((tr (agent-shell-to-go-test-make))
-         (full (make-string 800 ?z))
-         (id (agent-shell-to-go-transport-send-text tr "C1" nil "collapsed-header"))
-         (agent-shell-to-go-storage-base-dir (make-temp-file "astg-test-" t)))
-    (unwind-protect
-        (progn
-          (agent-shell-to-go--save-truncated-message tr "C1" id full "collapsed-header")
-          (agent-shell-to-go-test-inbound-reaction
-           tr "C1" id "testuser" 'expand-full nil)
-          (should
-           (equal
-            "collapsed-header"
-            (agent-shell-to-go-transport-get-message-text tr "C1" id))))
-      (delete-directory agent-shell-to-go-storage-base-dir t))))
+;;; Transport registry
 
 (ert-deftest agent-shell-to-go-test-core-transport-registry ()
   "Transports can be registered and retrieved by name."

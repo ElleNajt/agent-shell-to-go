@@ -100,8 +100,7 @@ If nil, NO ONE can interact (secure by default)."
 
 (defcustom agent-shell-to-go-slack-reaction-map
   '((hide . ("see_no_evil" "no_bell"))
-    (expand-truncated . ("eyes"))
-    (expand-full . ("book" "open_book"))
+    (expand . ("eyes"))
     (permission-allow . ("white_check_mark" "+1"))
     (permission-always . ("unlock" "star"))
     (permission-reject . ("x" "-1")))
@@ -470,41 +469,27 @@ METHOD is GET or POST, ENDPOINT is without the base URL, DATA is the payload."
      &optional
      options)
   "Post TEXT to Slack CHANNEL, optionally in THREAD-ID.
-Options plist supports :truncate :ephemeral :user-id."
-  (let* ((truncate (map-elt options :truncate))
-         (ephemeral (map-elt options :ephemeral))
-         (user-id (map-elt options :user-id))
-         (clean text)
-         (display
-          (if truncate
-              (agent-shell-to-go--truncate-text clean 500)
-            clean))
-         (was-truncated (and truncate (not (equal clean display)))))
+Options plist supports :ephemeral :user-id."
+  (let* ((ephemeral (map-elt options :ephemeral))
+         (user-id (map-elt options :user-id)))
     (condition-case err
         (let* ((endpoint
                 (if ephemeral
                     "chat.postEphemeral"
                   "chat.postMessage"))
-               (data `((channel . ,channel) (text . ,display)))
+               (data `((channel . ,channel) (text . ,text)))
                (_
                 (when thread-id
                   (push `(thread_ts . ,thread-id) data)))
                (_
                 (when (and ephemeral user-id)
                   (push `(user . ,user-id) data)))
-               (resp (agent-shell-to-go--slack-api "POST" endpoint data))
-               (msg-ts (map-elt resp 'ts)))
-          (when (and was-truncated msg-ts)
-            (agent-shell-to-go--save-truncated-message transport channel msg-ts clean))
-          msg-ts)
+               (resp (agent-shell-to-go--slack-api "POST" endpoint data)))
+          (map-elt resp 'ts))
       (error
        (agent-shell-to-go--debug "send-text error: %s, retrying ASCII-only" err)
        (let* ((safe (agent-shell-to-go--strip-non-ascii text))
-              (display
-               (if truncate
-                   (agent-shell-to-go--truncate-text safe 500)
-                 safe))
-              (data `((channel . ,channel) (text . ,display)))
+              (data `((channel . ,channel) (text . ,safe)))
               (_
                (when thread-id
                  (push `(thread_ts . ,thread-id) data)))

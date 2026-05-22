@@ -247,7 +247,6 @@ Each transport knows its own user-id format.")
     (transport channel-id thread-id text &optional options)
   "Send TEXT on TRANSPORT to CHANNEL-ID under THREAD-ID.
 OPTIONS is a plist, possibly including:
-  :truncate   truncate long content, store the rest for expansion
   :ephemeral  only visible to :user-id
   :user-id    target user for ephemeral
 Returns a message-id string.")
@@ -383,8 +382,7 @@ falls back to `agent-shell-to-go-default-transport'."
 ; Canonical inbound events 
 
 (defconst agent-shell-to-go--canonical-reaction-actions
-  '(hide
-    expand-truncated expand-full permission-allow permission-always permission-reject)
+  '(hide expand permission-allow permission-always permission-reject)
   "Closed set of canonical reaction action symbols.
 Transports map raw reactions to these when firing the reaction hook.")
 
@@ -411,15 +409,12 @@ Plist argument:
   :raw-emoji  opaque raw emoji (do not assume stringp)
   :added-p    t if reaction was added, nil if removed")
 
-; Storage helpers (for truncated/hidden texts)
-;; TODO: Replace truncation/hide mechanism with message splitting across multiple
-;; transport sends.  Splitting removes the need for expand reactions and handles
-;; agent messages (currently not truncated), which can also exceed transport limits
-;; (Discord: 2000 chars, Slack: 4000 chars).
-;; TODO: Add a per-transport send queue to handle rate limits.  All send/edit calls
-;; should be serialized through a timer-driven queue (one queue per transport instance)
-;; so bursts don't trigger 429s.  On a 429, read Retry-After and reschedule.
-;; Slack: ~1 msg/sec per channel; Discord: 5 requests/5 sec globally.
+; In-memory tool-call cache
+;; Each session's tool-call messages are stored in a global hash table keyed by
+;; (transport-name channel-id thread-id).  Entries are (title output expanded-p).
+;; The cache is persisted to one file per session and loaded on resume.
+;; Cache membership replaces tool-call marker files — presentation reactions on
+;; non-tool-call messages hit the cache-miss fallback.
 
 (defconst agent-shell-to-go--max-message-length 3800
   "Maximum body length for a transport message (with buffer for extra markup).")
@@ -427,29 +422,11 @@ Plist argument:
 (defconst agent-shell-to-go--truncation-note "\n_... (full text too long)_"
   "Note appended when an expanded message still exceeds transport limit.")
 
-(defconst agent-shell-to-go--truncated-view-length 500
-  "Length for truncated view (glance).")
-
 (defun agent-shell-to-go--truncate-text (text &optional max-len)
-  "Truncate TEXT to MAX-LEN (default 500), adding a hint."
-  (let ((max-len (or max-len 500)))
-    (if (> (length text) max-len)
-        (concat (substring text 0 max-len) "\n_… expand for more_")
-      text)))
-
-(defun agent-shell-to-go--hidden-path (transport channel-id msg-id)
-  "Return path for hidden MSG-ID in CHANNEL-ID on TRANSPORT."
-  (expand-file-name (format "hidden/%s/%s.txt" channel-id msg-id)
-                    (agent-shell-to-go-transport-storage-root transport)))
-
-(defun agent-shell-to-go--truncated-path (transport channel-id msg-id)
-  "Return path for truncated MSG-ID full text in CHANNEL-ID on TRANSPORT."
-  (expand-file-name (format "truncated/%s/%s.txt" channel-id msg-id)
-                    (agent-shell-to-go-transport-storage-root transport)))
-
-(defun agent-shell-to-go--collapsed-path (transport channel-id msg-id)
-  "Return path for collapsed form of MSG-ID in CHANNEL-ID on TRANSPORT."
-  (concat (agent-shell-to-go--truncated-path transport channel-id msg-id) ".collapsed"))
+  "Truncate TEXT to MAX-LEN chars, adding a hint if cut."
+  (when (and max-len (> (length text) max-len))
+    (setq text (concat (substring text 0 max-len) "\n_… truncated_")))
+  text)
 
 (defun agent-shell-to-go--save-file (path text)
   "Save TEXT to PATH, creating directories as needed."
@@ -464,96 +441,123 @@ Plist argument:
       (insert-file-contents path)
       (buffer-string))))
 
-(defun agent-shell-to-go--save-hidden-message (transport channel-id msg-id text)
-  "Save original TEXT for hidden MSG-ID."
-  (agent-shell-to-go--save-file
-   (agent-shell-to-go--hidden-path transport channel-id msg-id) text))
+;; tool-call-cache
 
-(defun agent-shell-to-go--load-hidden-message (transport channel-id msg-id)
-  "Load original text for hidden MSG-ID."
-  (agent-shell-to-go--load-file
-   (agent-shell-to-go--hidden-path transport channel-id msg-id)))
+(defvar agent-shell-to-go--tool-call-cache (make-hash-table :test #'equal)
+  "Global cache of tool-call presentation state.
+Key: (transport-name channel-id thread-id).
+Value: alist of (msg-id . (title output expanded-p)).")
 
-(defun agent-shell-to-go--delete-hidden-message-file (transport channel-id msg-id)
-  "Delete hidden MSG-ID file."
-  (let ((path (agent-shell-to-go--hidden-path transport channel-id msg-id)))
-    (when (file-exists-p path)
-      (delete-file path))))
+(defun agent-shell-to-go--cache-key (transport channel-id thread-id)
+  "Return the cache key for TRANSPORT, CHANNEL-ID, and THREAD-ID."
+  (list (agent-shell-to-go-transport-name transport) channel-id thread-id))
 
-(defun agent-shell-to-go--save-truncated-message
-    (transport channel-id msg-id full-text &optional collapsed-text)
-  "Save FULL-TEXT for MSG-ID.  Optionally also save COLLAPSED-TEXT."
-  (agent-shell-to-go--save-file
-   (agent-shell-to-go--truncated-path transport channel-id msg-id) full-text)
-  (when collapsed-text
+(defun agent-shell-to-go--cache-get-session (transport channel-id thread-id)
+  "Return the session alist for the given key, or nil."
+  (gethash (agent-shell-to-go--cache-key transport channel-id thread-id)
+           agent-shell-to-go--tool-call-cache))
+
+(defun agent-shell-to-go--cache-put-entry (transport channel-id thread-id msg-id title output)
+  "Store TITLE and OUTPUT for MSG-ID, defaulting to hidden (expanded-p nil)."
+  (let* ((key (agent-shell-to-go--cache-key transport channel-id thread-id))
+         (session (or (gethash key agent-shell-to-go--tool-call-cache) nil)))
+    (setf (alist-get msg-id session nil nil #'equal) (list title output nil))
+    (puthash key session agent-shell-to-go--tool-call-cache)))
+
+(defun agent-shell-to-go--cache-get-entry (transport channel-id thread-id msg-id)
+  "Return (title output expanded-p) for MSG-ID, or nil."
+  (when-let* ((session (agent-shell-to-go--cache-get-session
+                        transport channel-id thread-id)))
+    (alist-get msg-id session nil nil #'equal)))
+
+(defun agent-shell-to-go--cache-remove-session (transport channel-id thread-id)
+  "Remove the session entry from the cache."
+  (remhash (agent-shell-to-go--cache-key transport channel-id thread-id)
+           agent-shell-to-go--tool-call-cache))
+
+;; cache persistence
+
+(defun agent-shell-to-go--cache-session-file (transport thread-id)
+  "Return the path to the session cache file for TRANSPORT and THREAD-ID."
+  (expand-file-name
+   (format "sessions/%s.el" thread-id)
+   (agent-shell-to-go-transport-storage-root transport)))
+
+(defun agent-shell-to-go--cache-save-session (transport channel-id thread-id)
+  "Persist the session cache for THREAD-ID to disk."
+  (when-let* ((session (agent-shell-to-go--cache-get-session
+                        transport channel-id thread-id)))
     (agent-shell-to-go--save-file
-     (agent-shell-to-go--collapsed-path transport channel-id msg-id) collapsed-text)))
+     (agent-shell-to-go--cache-session-file transport thread-id)
+     (prin1-to-string session))))
 
-(defun agent-shell-to-go--load-truncated-message (transport channel-id msg-id)
-  "Load full text for MSG-ID."
-  (agent-shell-to-go--load-file
-   (agent-shell-to-go--truncated-path transport channel-id msg-id)))
+(defun agent-shell-to-go--cache-load-session (transport channel-id thread-id)
+  "Load the session cache for THREAD-ID from disk, storing it in the global cache."
+  (let* ((path (agent-shell-to-go--cache-session-file transport thread-id))
+         (text (agent-shell-to-go--load-file path)))
+    (when text
+      (let ((alist (condition-case nil
+                       (read text)
+                     (error nil))))
+        (when alist
+          (puthash (agent-shell-to-go--cache-key transport channel-id thread-id)
+                   alist
+                   agent-shell-to-go--tool-call-cache))))))
 
-(defun agent-shell-to-go--load-collapsed-message (transport channel-id msg-id)
-  "Load collapsed form for MSG-ID, if any."
-  (agent-shell-to-go--load-file
-   (agent-shell-to-go--collapsed-path transport channel-id msg-id)))
+(defun agent-shell-to-go--cache-cleanup-old-sessions (transport)
+  "Delete session cache files older than `agent-shell-to-go-cleanup-age-hours'."
+  (let ((sessions-dir
+         (expand-file-name "sessions/"
+                           (agent-shell-to-go-transport-storage-root transport))))
+    (when (file-directory-p sessions-dir)
+      (let ((cutoff (- (float-time) (* agent-shell-to-go-cleanup-age-hours 3600))))
+        (dolist (file (directory-files sessions-dir t "\\.el$"))
+          (when (< (float-time (nth 5 (file-attributes file))) cutoff)
+            (delete-file file)
+            (agent-shell-to-go--debug "cleaned up session cache: %s" file)))))))
 
-; Presentation-reaction dispatcher 
+; Presentation-reaction dispatcher
 
 (cl-defun agent-shell-to-go--handle-presentation-reaction
-    (&key transport channel-id msg-id action added-p &allow-other-keys)
-  "Handle presentation reactions (hide/expand/collapse) from a transport.
+    (&key transport channel-id msg-id thread-id action added-p &allow-other-keys)
+  "Handle presentation reactions (hide/expand) from a transport.
+Gate on cache membership: only tool call messages are cached.
 This runs before bridge handlers so the bridge never sees presentation reactions."
-  (pcase (cons added-p action)
-    (`(t . hide)
-     (when-let* ((text
-                  (agent-shell-to-go-transport-get-message-text
-                   transport channel-id msg-id)))
-       (agent-shell-to-go--save-hidden-message transport channel-id msg-id text)
-       (agent-shell-to-go-transport-edit-message
-        transport channel-id msg-id "_message hidden_")))
-    (`(nil . hide)
-     (when-let* ((original
-                  (agent-shell-to-go--load-hidden-message transport channel-id msg-id)))
-       (agent-shell-to-go-transport-edit-message transport channel-id msg-id original)
-       (agent-shell-to-go--delete-hidden-message-file transport channel-id msg-id)))
-    (`(t . expand-truncated)
-     (when-let* ((full
-                  (agent-shell-to-go--load-truncated-message
-                   transport channel-id msg-id)))
-       (let* ((too-long (> (length full) agent-shell-to-go--truncated-view-length))
-              (display
-               (if too-long
-                   (concat
-                    (substring full 0 agent-shell-to-go--truncated-view-length)
-                    "\n_… expand further for full output_")
-                 full)))
-         (agent-shell-to-go-transport-edit-message
-          transport channel-id msg-id display))))
-    (`(t . expand-full)
-     (when-let* ((full
-                  (agent-shell-to-go--load-truncated-message
-                   transport channel-id msg-id)))
-       (let* ((too-long (> (length full) agent-shell-to-go--max-message-length))
-              (display
-               (if too-long
-                   (concat
-                    (substring full 0 agent-shell-to-go--max-message-length)
-                    agent-shell-to-go--truncation-note)
-                 full)))
-         (agent-shell-to-go-transport-edit-message
-          transport channel-id msg-id display))))
-    ((or `(nil . expand-truncated) `(nil . expand-full))
-     (let* ((collapsed
-             (agent-shell-to-go--load-collapsed-message transport channel-id msg-id))
-            (full
-             (agent-shell-to-go--load-truncated-message transport channel-id msg-id))
-            (restore
-             (or collapsed (and full (agent-shell-to-go--truncate-text full 500)))))
-       (when restore
-         (agent-shell-to-go-transport-edit-message
-          transport channel-id msg-id restore))))))
+  (if-let ((entry (agent-shell-to-go--cache-get-entry
+                   transport channel-id thread-id msg-id)))
+      ;; Cache hit — process the reaction
+      (let ((title (nth 0 entry))
+            (output (nth 1 entry)))
+        (pcase (cons added-p action)
+          (`(t . hide)
+           (agent-shell-to-go-transport-edit-message
+            transport channel-id msg-id "_message hidden_")
+           (setf (nth 2 entry) nil))
+          (`(nil . hide)
+           (agent-shell-to-go-transport-edit-message
+            transport channel-id msg-id title)
+           (setf (nth 2 entry) nil))
+          (`(t . expand)
+           (let* ((full (concat title "\n" output))
+                  (display
+                   (if (> (length full) agent-shell-to-go--max-message-length)
+                       (concat (substring full 0 agent-shell-to-go--max-message-length)
+                               agent-shell-to-go--truncation-note)
+                     full)))
+             (agent-shell-to-go-transport-edit-message
+              transport channel-id msg-id display)
+             (setf (nth 2 entry) t)))
+          (`(nil . expand)
+           (agent-shell-to-go-transport-edit-message
+            transport channel-id msg-id title)
+           (setf (nth 2 entry) nil))))
+    ;; Cache miss — only for additions; removals self-heal on re-add
+    (when (and added-p (memq action '(hide expand)))
+      (when-let* ((text (agent-shell-to-go-transport-get-message-text
+                         transport channel-id msg-id)))
+        (agent-shell-to-go-transport-edit-message
+         transport channel-id msg-id
+         (concat text "\n_reaction ignored — no cache entry_"))))))
 
 (add-hook
  'agent-shell-to-go-reaction-hook #'agent-shell-to-go--handle-presentation-reaction)

@@ -1,0 +1,5 @@
+shell-maker  https://github.com/xenodium/shell-maker        11f4a9913e7625f122625dd89d668ad5c93cf151
+acp          https://github.com/xenodium/acp.el              661af51569acef7384a2801f07a582da5142a6d9
+agent-shell  https://github.com/xenodium/agent-shell         2cc8263779d339686126653a508a0a6d083cab7b
+websocket    https://github.com/ahyatt/emacs-websocket       03d1cca4bd910a8df73e4ec637836c6ac25213a2
+mock-acp     https://github.com/junyi-hou/mock-acp           a835bac254932c7f91905c087a893e9053e8a4c4

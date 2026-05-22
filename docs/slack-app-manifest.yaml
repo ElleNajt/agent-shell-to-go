@@ -12,10 +12,6 @@ features:
       description: Start new agent in a folder
       usage_hint: "[folder path]"
       should_escape: false
-    - command: /new-agent-container
-      description: Start new agent in a container
-      usage_hint: "[folder path]"
-      should_escape: false
     - command: /new-project
       description: Create a new project and start an agent
       usage_hint: "<project-name>"

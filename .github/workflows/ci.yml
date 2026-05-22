@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: purcell/setup-emacs@master
+        with:
+          version: 29.1
+
+      - name: Install direnv
+        run: sudo apt-get install -y direnv
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run tests
+        run: make test

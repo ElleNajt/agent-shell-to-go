@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEPS_DIR="$PROJECT_ROOT/tests/deps"
+
+if [ $# -lt 1 ]; then
+    echo "Usage: run-agent PROJ-PATH [CONFIG-FILE]" >&2
+    exit 1
+fi
+
+PROJ_PATH="$(cd "$1" && pwd)"
+CONFIG_FILE="${2:-$HOME/.config/agent-shell-to-go/config.el}"
+
+# Install deps (shared with make test)
+make -C "$PROJECT_ROOT" deps-init
+
+# Load user config if present
+CONFIG_LOAD=()
+if [ -f "$CONFIG_FILE" ]; then
+    CONFIG_LOAD=(-l "$CONFIG_FILE")
+fi
+
+DAEMON_NAME="agent-shell-to-go-$$"
+
+# Each --eval is processed in order: config file is loaded first via -l,
+# then env vars override it, then setup runs with the final values.
+emacs --daemon="$DAEMON_NAME" -Q \
+    -L "$DEPS_DIR/shell-maker" \
+    -L "$DEPS_DIR/acp" \
+    -L "$DEPS_DIR/agent-shell" \
+    -L "$DEPS_DIR/websocket" \
+    -L "$PROJECT_ROOT" \
+    ${CONFIG_LOAD[@]+"${CONFIG_LOAD[@]}"} \
+    --eval "(require 'agent-shell)" \
+    --eval "(require 'agent-shell-to-go)" \
+    --eval "(when-let* ((v (getenv \"SLACK_BOT_TOKEN\")))     (setq agent-shell-to-go-slack-bot-token v))" \
+    --eval "(when-let* ((v (getenv \"SLACK_APP_TOKEN\")))     (setq agent-shell-to-go-slack-app-token v))" \
+    --eval "(when-let* ((v (getenv \"SLACK_CHANNEL_ID\")))    (setq agent-shell-to-go-slack-channel-id v))" \
+    --eval "(when-let* ((v (getenv \"SLACK_USER_ID\")))       (setq agent-shell-to-go-slack-user-id v))" \
+    --eval "(when-let* ((v (getenv \"SLACK_AUTHORIZED_USER\"))) (add-to-list 'agent-shell-to-go-slack-authorized-users v))" \
+    --eval "(when-let* ((v (getenv \"DISCORD_BOT_TOKEN\")))   (setq agent-shell-to-go-discord-bot-token v))" \
+    --eval "(when-let* ((v (getenv \"DISCORD_GUILD_ID\")))    (setq agent-shell-to-go-discord-guild-id v))" \
+    --eval "(when-let* ((v (getenv \"DISCORD_CHANNEL_ID\")))  (setq agent-shell-to-go-discord-channel-id v))" \
+    --eval "(when-let* ((v (getenv \"DISCORD_AUTHORIZED_USER\"))) (add-to-list 'agent-shell-to-go-discord-authorized-users v))" \
+    --eval "(when-let* ((v (getenv \"DEFAULT_TRANSPORT\")))      (setq agent-shell-to-go-default-transport (intern v)))" \
+    --eval "(when-let* ((v (getenv \"AGENT_PREFERRED_CONFIG\"))) (setq agent-shell-preferred-agent-config (intern v)))" \
+    --eval "(agent-shell-to-go-setup)" \
+    --eval "(setq enable-local-variables :all)"
+
+while ! emacsclient -s "$DAEMON_NAME" --eval t &>/dev/null 2>&1; do
+    sleep 0.1
+done
+
+exec emacsclient -s "$DAEMON_NAME" \
+    --eval "(let ((default-directory \"$PROJ_PATH\")) (agent-shell-new-shell))"
